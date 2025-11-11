@@ -26,7 +26,7 @@
       width: 100%; padding: 10px 12px; font-size: 16px; border: 1px solid #888;
       border-radius: 6px; cursor: pointer; background: #444; color: #fff;
     }
-    .choice button:hover, . .respawnBtn:hover { background: #555; }
+    .choice button:hover, .respawnBtn:hover { background: #555; }
   </style>
 </head>
 <body>
@@ -59,7 +59,8 @@ const gameOverPopup = document.getElementById("gameOverPopup");
 const gameOverStats = document.getElementById("gameOverStats");
 const respawnBtn = document.getElementById("respawnBtn");
 
-const socket = io({ transports: ["websocket"] });
+// Point to your Render server URL
+const socket = io("https://fun-game-1.onrender.com", { transports: ["websocket"] });
 
 let myId = null;
 
@@ -77,7 +78,7 @@ const damagePopups = [];
 
 let snapshot = {
   mapWidth, mapHeight,
-  players: [], // [{ id, x,y,angle,r,hp,maxHp,xp,level,path,bullets,drones,traps,... }]
+  players: [],
   boss: null,
   superBoss: null,
   shapes: [],
@@ -361,30 +362,25 @@ function drawSuperBoss(sb) {
 }
 
 function drawBullets(players, boss, superBoss) {
-  // Player bullets
   ctx.fillStyle = "yellow";
   for (const p of players) {
     for (const b of p.bullets) {
       ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill();
     }
   }
-  // Boss bullets
   ctx.fillStyle = "red";
   if (boss) for (const b of boss.bullets) { ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill(); }
-  // SuperBoss bullets
   ctx.fillStyle = "#ff66ff";
   if (superBoss) for (const b of superBoss.bullets) { ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill(); }
 }
 
 function drawDrones(players, superBoss) {
-  // Player drones
   for (const p of players) {
     if (p.path === "drone") {
       ctx.fillStyle = p.droneGuardian ? "#88f" : "yellow";
       for (const d of p.drones) { ctx.beginPath(); ctx.arc(d.x - camera.x, d.y - camera.y, d.r, 0, Math.PI * 2); ctx.fill(); }
     }
   }
-  // SuperBoss drones
   ctx.fillStyle = "#ff66ff";
   if (superBoss) for (const d of superBoss.drones) { ctx.beginPath(); ctx.arc(d.x - camera.x, d.y - camera.y, d.r, 0, Math.PI * 2); ctx.fill(); }
 }
@@ -443,7 +439,6 @@ function drawMiniMap(snap) {
   ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(x, y, mmW, mmH);
   ctx.strokeStyle = "white"; ctx.lineWidth = 1; ctx.strokeRect(x, y, mmW, mmH);
 
-  // players
   for (const p of snap.players) {
     ctx.fillStyle = p.id === myId ? "cyan" : "#66ccff";
     ctx.beginPath(); ctx.arc(x + p.x * scaleX, y + p.y * scaleY, 3, 0, Math.PI * 2); ctx.fill();
@@ -472,7 +467,6 @@ function drawMiniMap(snap) {
 
 function drawLeaderboard(snap) {
   const entries = [];
-
   for (const p of snap.players) entries.push({ name: `P:${p.id.slice(0,4)}`, xp: p.xp });
   const b = snap.boss, sb = snap.superBoss;
 
@@ -523,10 +517,7 @@ function drawAll() {
   }
   drawGrid();
 
-  // players
   for (const p of snapshot.players) drawPlayer(p, p.id === myId);
-
-  // shapes, bosses, bullets, drones, traps
   drawShapes(snapshot.shapes);
   drawBoss(snapshot.boss);
   drawSuperBoss(snapshot.superBoss);
@@ -558,9 +549,8 @@ socket.on("state", s => {
     const path = me?.path || null;
     chooseSubUpgrade(s.prompt.level, path);
   }
-  if (s.gameOver && !gameOverActive) {
-    showGameOver();
-  }
+  const me = s.players.find(p => p.id === myId);
+  if (me?.dead && !gameOverActive) showGameOver();
 });
 
 function sendInputs() {
