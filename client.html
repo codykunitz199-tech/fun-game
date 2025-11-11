@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Arras.io Clone — Multiplayer Client (PvP)</title>
+  <style>
+    canvas { background: #222; display: block; margin: 0 auto; }
+    body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+    #choicePopup, #gameOverPopup {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(30,30,30,0.95); color: white;
+      padding: 20px 24px; border: 2px solid white; border-radius: 10px;
+      display: none; text-align: center; width: 700px; max-width: 95vw;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+    }
+    #choicePopup h2, #gameOverPopup h2 { margin: 0 0 10px; font-size: 22px; }
+    #choicePopup p, #gameOverPopup p { margin: 0 0 16px; font-size: 14px; color: #ccc; }
+    .choiceRow { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .choice {
+      background: #2a2a2a; border: 1px solid #555; border-radius: 10px;
+      padding: 10px; width: 200px;
+    }
+    .choice canvas { display: block; margin: 0 auto 8px; background: #111; border: 1px solid #444; border-radius: 6px; }
+    .choice button, .respawnBtn {
+      width: 100%; padding: 10px 12px; font-size: 16px; border: 1px solid #888;
+      border-radius: 6px; cursor: pointer; background: #444; color: #fff;
+    }
+    .choice button:hover, . .respawnBtn:hover { background: #555; }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+
+<!-- Upgrade selection -->
+<div id="choicePopup">
+  <h2 id="popupTitle">Choose</h2>
+  <p id="popupDesc">Make your selection to evolve.</p>
+  <div class="choiceRow" id="choiceRow"></div>
+</div>
+
+<!-- Game Over screen -->
+<div id="gameOverPopup">
+  <h2>Game Over</h2>
+  <p id="gameOverStats">You were destroyed.</p>
+  <button class="respawnBtn" id="respawnBtn">Respawn</button>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+/* ===== Client setup ===== */
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const choicePopup = document.getElementById("choicePopup");
+const choiceRow = document.getElementById("choiceRow");
+const popupTitle = document.getElementById("popupTitle");
+const popupDesc = document.getElementById("popupDesc");
+const gameOverPopup = document.getElementById("gameOverPopup");
+const gameOverStats = document.getElementById("gameOverStats");
+const respawnBtn = document.getElementById("respawnBtn");
+
+const socket = io({ transports: ["websocket"] });
+
+let myId = null;
+
+/* ===== Local view state ===== */
+let mapWidth = 7200;
+let mapHeight = 5400;
+
+let selectionActive = false;
+let gameOverActive = false;
+
+let keys = {};
+let mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+const camera = { x: 0, y: 0 };
+const damagePopups = [];
+
+let snapshot = {
+  mapWidth, mapHeight,
+  players: [], // [{ id, x,y,angle,r,hp,maxHp,xp,level,path,bullets,drones,traps,... }]
+  boss: null,
+  superBoss: null,
+  shapes: [],
+  prompt: null,
+  gameOver: false
+};
+
+// Input events
+document.addEventListener("keydown", e => {
+  keys[e.key] = true;
+  if ((e.key === " " || e.code === "Space") && !selectionActive && !gameOverActive) {
+    e.preventDefault();
+    socket.emit("tryPlaceTrap");
+  }
+});
+document.addEventListener("keyup", e => keys[e.key] = false);
+canvas.addEventListener("mousemove", e => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = e.clientX - rect.left;
+  mouse.y = e.clientY - rect.top;
+});
+
+/* ===== UI helpers ===== */
+function showPopup(title, desc) {
+  popupTitle.textContent = title;
+  popupDesc.textContent = desc;
+  selectionActive = true;
+  choicePopup.style.display = "block";
+}
+function hidePopup() {
+  selectionActive = false;
+  choicePopup.style.display = "none";
+  choiceRow.innerHTML = "";
+}
+function showGameOver() {
+  gameOverActive = true;
+  const me = snapshot.players.find(p => p.id === myId) || { level: 1, xp: 0 };
+  gameOverStats.textContent = `Level reached: ${me.level} | XP: ${me.xp}`;
+  gameOverPopup.style.display = "block";
+}
+function hideGameOver() {
+  gameOverActive = false;
+  gameOverPopup.style.display = "none";
+}
+
+/* ===== Upgrade UI (client presents; server applies) ===== */
+function drawPreviewTank(ctx2, key) {
+  const w = ctx2.canvas.width, h = ctx2.canvas.height;
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.save(); ctx2.translate(w/2, h/2);
+  ctx2.fillStyle = "cyan"; ctx2.beginPath(); ctx2.arc(0, 0, 20, 0, Math.PI*2); ctx2.fill();
+  const drawBarrel = (ang, len=18, color="white") => { ctx2.save(); ctx2.rotate(ang); ctx2.fillStyle = color; ctx2.fillRect(20, -5, len, 10); ctx2.restore(); };
+  const visuals = {
+    multi: () => { drawBarrel(-0.2); drawBarrel(0); drawBarrel(0.2); },
+    big:   () => { drawBarrel(0, 28); },
+    drone: () => { ctx2.fillStyle="yellow"; for(let i=0;i<3;i++){ const ang=i*(Math.PI*2/3); ctx2.beginPath(); ctx2.arc(Math.cos(ang)*35,Math.sin(ang)*35,6,0,Math.PI*2); ctx2.fill(); } },
+    trap:  () => { ctx2.fillStyle="#66ff66"; ctx2.fillRect(-8, -8, 16, 16); drawBarrel(0, 18, "#66ff66"); }
+  };
+  (visuals[key] ?? (()=>{}))();
+  ctx2.restore();
+}
+function injectChoices(choices, title, desc, onPick) {
+  choiceRow.innerHTML = "";
+  showPopup(title, desc);
+  choices.forEach(ch => {
+    const wrap = document.createElement("div");
+    wrap.className = "choice";
+    const canv = document.createElement("canvas");
+    canv.width = 180; canv.height = 120;
+    wrap.appendChild(canv);
+    const btn = document.createElement("button");
+    btn.textContent = ch.label;
+    btn.addEventListener("click", () => { onPick(ch.key); hidePopup(); });
+    wrap.appendChild(btn);
+    choiceRow.appendChild(wrap);
+    drawPreviewTank(canv.getContext("2d"), ch.keyPreview ?? ch.key);
+  });
+}
+function choosePath() {
+  injectChoices([
+    { key: "multi", label: "Multi‑Barrel", keyPreview: "multi" },
+    { key: "big",   label: "Big Cannon", keyPreview: "big" },
+    { key: "drone", label: "Drones", keyPreview: "drone" },
+    { key: "trap",  label: "Trap Layer", keyPreview: "trap" }
+  ], "Choose Your Path (Level 3)", "Select your tank class.", key => socket.emit("switchPath", key));
+}
+function chooseSubUpgrade(level, path) {
+  const sendPick = key => socket.emit("applyUpgrade", key);
+  if (path === "drone") {
+    if (level === 6) {
+      injectChoices([
+        { key: "droneKamikazeBoost", label: "Kamikaze Swarm (+damage)", keyPreview: "drone" },
+        { key: "droneGuardian", label: "Guardian Orbit (intercept bullets)", keyPreview: "drone" },
+        { key: "droneShooter", label: "Shooter Drones (weak shots, 3× slower)", keyPreview: "drone" }
+      ], "Drones (Level 6)", "Pick one:", sendPick);
+    } else if (level === 9) {
+      injectChoices([
+        { key: "hiveExpansion", label: "Hive Expansion (max 15 drones)", keyPreview: "drone" },
+        { key: "armoredDrones", label: "Armored Drones (survive 2 hits)", keyPreview: "drone" },
+        { key: "snareDrones", label: "Snare Drones (slow enemies on hit)", keyPreview: "drone" }
+      ], "Drones (Level 9)", "Pick one:", sendPick);
+    } else if (level === 12) {
+      injectChoices([
+        { key: "droneCommander", label: "Drone Commander (faster respawn, max 20)", keyPreview: "drone" },
+        { key: "explosiveDrones", label: "Explosive Drones (AoE on death)", keyPreview: "drone" },
+        { key: "hybridDrones", label: "Hybrid Drones (shoot & kamikaze, 3× slower)", keyPreview: "drone" }
+      ], "Drones (Level 12)", "Final pick:", sendPick);
+    }
+  } else if (path === "multi") {
+    if (level === 6) {
+      injectChoices([
+        { key: "alternatingFire", label: "Alternating Fire", keyPreview: "multi" },
+        { key: "rotaryTurret", label: "Rotary Turret", keyPreview: "multi" },
+        { key: "sideSponsons", label: "Side Sponsons", keyPreview: "multi" }
+      ], "Multi‑Barrel (Level 6)", "Pick one:", sendPick);
+    } else if (level === 9) {
+      injectChoices([
+        { key: "scattershot", label: "Scattershot", keyPreview: "multi" },
+        { key: "quadCore", label: "Quad Core (+1 barrel)", keyPreview: "multi" },
+        { key: "artillery", label: "Artillery", keyPreview: "multi" }
+      ], "Multi‑Barrel (Level 9)", "Pick one:", sendPick);
+    } else if (level === 12) {
+      injectChoices([
+        { key: "wallOfLead", label: "Wall of Lead (+2 barrels; 1/3 dmg)", keyPreview: "multi" },
+        { key: "precisionBattery", label: "Precision Battery", keyPreview: "multi" },
+        { key: "piercingShells", label: "Piercing Shells (+2 pierce)", keyPreview: "multi" }
+      ], "Multi‑Barrel (Level 12)", "Final pick:", sendPick);
+    }
+  } else if (path === "big") {
+    if (level === 6) {
+      injectChoices([
+        { key: "dualBig", label: "Dual Big", keyPreview: "big" },
+        { key: "megaBullet", label: "Mega Bullet", keyPreview: "big" },
+        { key: "impactExplosive", label: "Impact Explosive", keyPreview: "big" }
+      ], "Big Bullet (Level 6)", "Pick one:", sendPick);
+    } else if (level === 9) {
+      injectChoices([
+        { key: "clusterBomb", label: "Cluster Bomb", keyPreview: "big" },
+        { key: "siegeMode", label: "Siege Mode", keyPreview: "big" },
+        { key: "titanShell", label: "Titan Shell", keyPreview: "big" }
+      ], "Big Bullet (Level 9)", "Pick one:", sendPick);
+    } else if (level === 12) {
+      injectChoices([
+        { key: "twinSiege", label: "Twin Siege", keyPreview: "big" },
+        { key: "shockwaveRound", label: "Shockwave Round", keyPreview: "big" },
+        { key: "piercingShells", label: "Piercing Shells (+2 pierce)", keyPreview: "big" }
+      ], "Big Bullet (Level 12)", "Final pick:", sendPick);
+    }
+  } else if (path === "trap") {
+    if (level === 6) {
+      injectChoices([
+        { key: "trapDoubleLayer", label: "Double Layer", keyPreview: "trap" },
+        { key: "trapBig", label: "Big Trap (120 HP, 3× dmg)", keyPreview: "trap" }
+      ], "Trap Layer (Level 6)", "Pick one:", sendPick);
+    } else if (level === 9) {
+      injectChoices([
+        { key: "trapQuad", label: "Quad Trap (-20% dmg)", keyPreview: "trap" },
+        { key: "trapHuge", label: "Huge Trap (500 HP, 9× dmg)", keyPreview: "trap" }
+      ], "Trap Layer (Level 9)", "Pick one:", sendPick);
+    } else if (level === 12) {
+      injectChoices([
+        { key: "trapCluster", label: "Cluster Trap (Huge + shards)", keyPreview: "trap" },
+        { key: "trapSentry", label: "Sentry Trap (auto 3 dmg)", keyPreview: "trap" }
+      ], "Trap Layer (Level 12)", "Final pick:", sendPick);
+    }
+  }
+}
+
+/* ===== Rendering ===== */
+function addDamagePopup(x, y, text, color = "white", duration = 1000) {
+  damagePopups.push({ x, y, text: String(Math.max(1, Math.round(text))), color, created: performance.now(), duration, vy: -0.4 });
+}
+
+function drawHealthBar(x, y, hp, maxHp) {
+  const w = 80, h = 10, offsetY = 50;
+  ctx.fillStyle = "black"; ctx.fillRect(x - w/2 - camera.x, y - offsetY - camera.y, w, h);
+  ctx.fillStyle = "#00ff66"; ctx.fillRect(x - w/2 - camera.x, y - offsetY - camera.y, w * (hp / maxHp), h);
+  ctx.fillStyle = "white"; ctx.font = "10px Arial"; ctx.textAlign = "center";
+  ctx.fillText(`${Math.ceil(hp)}`, x - camera.x, y - offsetY - 2 - camera.y);
+}
+
+function drawGrid() {
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 1;
+  for (let gx = 0; gx <= mapWidth; gx += 200) { ctx.beginPath(); ctx.moveTo(gx - camera.x, 0 - camera.y); ctx.lineTo(gx - camera.x, mapHeight - camera.y); ctx.stroke(); }
+  for (let gy = 0; gy <= mapHeight; gy += 200) { ctx.beginPath(); ctx.moveTo(0 - camera.x, gy - camera.y); ctx.lineTo(mapWidth - camera.x, gy - camera.y); ctx.stroke(); }
+}
+
+function drawPlayer(p, isMe=false) {
+  if (!p) return;
+  ctx.save(); ctx.translate(p.x - camera.x, p.y - camera.y); ctx.rotate(p.angle);
+  ctx.fillStyle = isMe ? "#66ffff" : "cyan";
+  ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill();
+  if (p.mainGunEnabled) {
+    const spread = p.precisionBattery ? 0.12 : 0.2;
+    const startAngle = -(spread * (p.barrels - 1) / 2);
+    for (let i = 0; i < p.barrels; i++) {
+      const offset = startAngle + i * spread;
+      ctx.save(); ctx.rotate(offset);
+      ctx.fillStyle = "white"; ctx.fillRect(p.r, -5, 15, 10);
+      ctx.restore();
+    }
+    if (p.sideSponsons) {
+      ctx.save(); ctx.rotate(Math.PI/2); ctx.fillStyle="#ddd"; ctx.fillRect(p.r, -5, 15, 10); ctx.restore();
+      ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillStyle="#ddd"; ctx.fillRect(p.r, -5, 15, 10); ctx.restore();
+    }
+  }
+  ctx.restore();
+  drawHealthBar(p.x, p.y, p.hp, p.maxHp);
+}
+
+function drawShapes(shapes) {
+  for (const s of shapes) {
+    ctx.save(); ctx.translate(s.x - camera.x, s.y - camera.y); ctx.rotate(s.angle);
+    const colorBase = s.type === "square" ? "orange" : s.type === "triangle" ? "red" : "purple";
+    const color = s.variant === "beta" ? "#ffd480" : s.variant === "aptha" ? "#ff80ff" : colorBase;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    if (s.type === "square") { ctx.fillRect(-s.r, -s.r, s.r * 2, s.r * 2); }
+    else if (s.type === "triangle") { ctx.moveTo(0, -s.r); ctx.lineTo(-s.r, s.r); ctx.lineTo(s.r, s.r); ctx.closePath(); ctx.fill(); }
+    else { ctx.arc(0, 0, s.r, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+    drawHealthBar(s.x, s.y, s.hp, s.maxHp);
+  }
+}
+
+function drawBoss(boss) {
+  if (!boss || boss.hp <= 0) return;
+  ctx.save(); ctx.translate(boss.x - camera.x, boss.y - camera.y); ctx.rotate(boss.angle);
+  ctx.strokeStyle = "white"; ctx.lineWidth = 3; ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const ang = (i / 10) * Math.PI * 2;
+    const px = Math.cos(ang) * boss.r, py = Math.sin(ang) * boss.r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle = "#ddd";
+  for (let i = 0; i < 5; i++) {
+    const gunAng = i * (Math.PI * 2 / 5);
+    ctx.save(); ctx.rotate(gunAng); ctx.fillRect(boss.r - 10, -4, 20, 8); ctx.restore();
+  }
+  ctx.restore();
+  drawHealthBar(boss.x, boss.y, boss.hp, boss.maxHp);
+}
+
+function drawHex(x, y, r, angle, color, fillAlpha=0) {
+  ctx.save(); ctx.translate(x - camera.x, y - camera.y); ctx.rotate(angle);
+  ctx.strokeStyle = color; ctx.lineWidth = 3;
+  if (fillAlpha > 0) { ctx.fillStyle = `rgba(255,255,255,${fillAlpha})`; }
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const ang = i * (Math.PI * 2 / 6);
+    const px = Math.cos(ang) * r;
+    const py = Math.sin(ang) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  if (fillAlpha > 0) ctx.fill();
+  ctx.restore();
+}
+function drawRotatingCannons(x, y, r, angle, count, color, length=20, width=6) {
+  ctx.save(); ctx.translate(x - camera.x, y - camera.y); ctx.rotate(angle);
+  ctx.fillStyle = color;
+  for (let i = 0; i < count; i++) {
+    const ang = i * (Math.PI * 2 / count);
+    ctx.save(); ctx.rotate(ang);
+    ctx.fillRect(r - width, -width/2, length, width);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+function drawSuperBoss(sb) {
+  if (!sb || sb.hp <= 0) return;
+  drawHex(sb.x, sb.y, sb.rBottom, sb.angleBottom, "rgba(255,255,255,1)", 0.05);
+  drawRotatingCannons(sb.x, sb.y, sb.rBottom, sb.angleBottom, 6, "#ff66ff", 28, 8);
+  drawHex(sb.x, sb.y, sb.rMiddle, sb.angleMiddle, "rgba(255,255,255,0.7)", 0.03);
+  drawRotatingCannons(sb.x, sb.y, sb.rMiddle, sb.angleMiddle, 15, "#ff99ff", 20, 6);
+  drawHex(sb.x, sb.y, sb.rTop, sb.angleTop, "rgba(255,255,255,0.5)", 0.02);
+  drawRotatingCannons(sb.x, sb.y, sb.rTop, sb.angleTop, 6, "#ffffff", 14, 5);
+  drawHealthBar(sb.x, sb.y, sb.hp, sb.maxHp);
+}
+
+function drawBullets(players, boss, superBoss) {
+  // Player bullets
+  ctx.fillStyle = "yellow";
+  for (const p of players) {
+    for (const b of p.bullets) {
+      ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  // Boss bullets
+  ctx.fillStyle = "red";
+  if (boss) for (const b of boss.bullets) { ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill(); }
+  // SuperBoss bullets
+  ctx.fillStyle = "#ff66ff";
+  if (superBoss) for (const b of superBoss.bullets) { ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill(); }
+}
+
+function drawDrones(players, superBoss) {
+  // Player drones
+  for (const p of players) {
+    if (p.path === "drone") {
+      ctx.fillStyle = p.droneGuardian ? "#88f" : "yellow";
+      for (const d of p.drones) { ctx.beginPath(); ctx.arc(d.x - camera.x, d.y - camera.y, d.r, 0, Math.PI * 2); ctx.fill(); }
+    }
+  }
+  // SuperBoss drones
+  ctx.fillStyle = "#ff66ff";
+  if (superBoss) for (const d of superBoss.drones) { ctx.beginPath(); ctx.arc(d.x - camera.x, d.y - camera.y, d.r, 0, Math.PI * 2); ctx.fill(); }
+}
+
+function drawTraps(players) {
+  for (const p of players) {
+    for (const t of p.traps) {
+      ctx.save();
+      ctx.translate(t.x - camera.x, t.y - camera.y);
+      ctx.fillStyle = t.cluster ? "#ffcc66" : (t.sentry ? "#66ccff" : "#66ff66");
+      ctx.beginPath(); ctx.arc(0, 0, t.r, 0, Math.PI * 2); ctx.fill();
+      if (t.sentry) { ctx.fillStyle = "white"; ctx.fillRect(-2, -t.r, 4, 10); }
+      ctx.restore();
+      const maxHP = t.hp >= 500 ? 500 : (t.hp >= 120 ? 120 : 60);
+      drawHealthBar(t.x, t.y, t.hp, maxHP);
+    }
+  }
+}
+
+function drawDamagePopupsClient() {
+  ctx.save();
+  ctx.font = "12px Arial"; ctx.textAlign = "center";
+  for (const p of damagePopups) {
+    const alpha = Math.max(0, 1 - (performance.now() - p.created) / p.duration);
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.strokeStyle = `rgba(0,0,0,${alpha})`; ctx.lineWidth = 2;
+    ctx.strokeText(p.text, p.x - camera.x, p.y - camera.y);
+    ctx.fillStyle = p.color; ctx.fillText(p.text, p.x - camera.x, p.y - camera.y);
+  }
+  ctx.restore();
+}
+
+function drawUI(me) {
+  ctx.save();
+  ctx.fillStyle = "white"; ctx.font = "14px Arial"; ctx.textAlign = "left";
+  const hp = me ? me.hp : 0;
+  const xp = me ? me.xp : 0;
+  const lvl = me ? me.level : 1;
+  ctx.fillText(`HP: ${Math.floor(hp)}`, 10, 20);
+  ctx.fillText(`XP: ${Math.floor(xp)}`, 10, 40);
+  ctx.fillText(`Level: ${lvl} / 12`, 10, 60);
+  if (me && me.trapLayer) {
+    const now = performance.now();
+    const cd = Math.max(0, (me.nextTrapTime ?? now) - now);
+    ctx.fillText(`Traps: ${me.traps.length}/${me.trapMax} | Cooldown: ${Math.ceil(cd/100)/10}s`, 10, 80);
+  }
+  ctx.restore();
+}
+
+function drawMiniMap(snap) {
+  const mmW = 200, mmH = 150, padding = 10;
+  const scaleX = mmW / mapWidth, scaleY = mmH / mapHeight;
+  const x = canvas.width - mmW - padding, y = padding;
+
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(x, y, mmW, mmH);
+  ctx.strokeStyle = "white"; ctx.lineWidth = 1; ctx.strokeRect(x, y, mmW, mmH);
+
+  // players
+  for (const p of snap.players) {
+    ctx.fillStyle = p.id === myId ? "cyan" : "#66ccff";
+    ctx.beginPath(); ctx.arc(x + p.x * scaleX, y + p.y * scaleY, 3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  const b = snap.boss;
+  if (b && b.hp > 0) {
+    ctx.fillStyle = "white";
+    ctx.beginPath(); ctx.arc(x + b.x * scaleX, y + b.y * scaleY, 3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  const sb = snap.superBoss;
+  if (sb && sb.hp > 0) {
+    ctx.fillStyle = "#ff66ff";
+    const sx = x + sb.x * scaleX, sy = y + sb.y * scaleY;
+    ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "white"; ctx.font = "10px Arial"; ctx.textAlign = "center";
+    ctx.fillText(`HP:${Math.ceil(sb.hp)}`, sx, sy - 8);
+  }
+
+  const viewX = x + camera.x * scaleX, viewY = y + camera.y * scaleY;
+  const viewW = canvas.width * scaleX, viewH = canvas.height * scaleY;
+  ctx.strokeStyle = "#88ff88"; ctx.strokeRect(viewX, viewY, viewW, viewH);
+  ctx.restore();
+}
+
+function drawLeaderboard(snap) {
+  const entries = [];
+
+  for (const p of snap.players) entries.push({ name: `P:${p.id.slice(0,4)}`, xp: p.xp });
+  const b = snap.boss, sb = snap.superBoss;
+
+  if (b && b.hp > 0) entries.push({ name: "Boss", xp: b.hp });
+  if (sb && sb.hp > 0) entries.push({ name: "Super Boss", xp: sb.hp });
+
+  let squareXP = 0, triXP = 0, pentXP = 0;
+  for (const s of snap.shapes) {
+    if (s.type === "square") squareXP += s.hp;
+    else if (s.type === "triangle") triXP += s.hp;
+    else if (s.type === "pentagon") pentXP += s.hp;
+  }
+  if (squareXP > 0) entries.push({ name: "Squares", xp: squareXP });
+  if (triXP > 0) entries.push({ name: "Triangles", xp: triXP });
+  if (pentXP > 0) entries.push({ name: "Pentagons", xp: pentXP });
+
+  entries.sort((a, b) => b.xp - a.xp);
+
+  ctx.save();
+  const panelX = canvas.width - 240;
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(panelX, 10, 230, 200);
+  ctx.strokeStyle = "white"; ctx.strokeRect(panelX, 10, 230, 200);
+
+  ctx.fillStyle = "white";
+  ctx.font = "14px Arial";
+  ctx.textAlign = "left";
+  ctx.fillText("Leaderboard (XP)", panelX + 10, 28);
+
+  let y = 50;
+  ctx.font = "12px Arial";
+  for (const e of entries.slice(0, 10)) {
+    ctx.fillText(`${e.name}: ${Math.floor(e.xp)}`, panelX + 10, y);
+    y += 18;
+  }
+  ctx.restore();
+}
+
+/* ===== Client loop ===== */
+function drawAll() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const me = snapshot.players.find(p => p.id === myId);
+  if (me) {
+    camera.x = me.x - canvas.width / 2;
+    camera.y = me.y - canvas.height / 2;
+    camera.x = Math.max(0, Math.min(mapWidth - canvas.width, camera.x));
+    camera.y = Math.max(0, Math.min(mapHeight - canvas.height, camera.y));
+  }
+  drawGrid();
+
+  // players
+  for (const p of snapshot.players) drawPlayer(p, p.id === myId);
+
+  // shapes, bosses, bullets, drones, traps
+  drawShapes(snapshot.shapes);
+  drawBoss(snapshot.boss);
+  drawSuperBoss(snapshot.superBoss);
+  drawBullets(snapshot.players, snapshot.boss, snapshot.superBoss);
+  drawDrones(snapshot.players, snapshot.superBoss);
+  drawTraps(snapshot.players);
+
+  drawUI(me || { hp: 0, xp: 0, level: 1, traps: [], trapLayer: false, trapMax: 0, nextTrapTime: 0 });
+  drawMiniMap(snapshot);
+  drawLeaderboard(snapshot);
+  drawDamagePopupsClient();
+}
+
+/* ===== Networking ===== */
+socket.on("connect", () => { myId = socket.id; });
+
+socket.on("state", s => {
+  snapshot = s;
+  mapWidth = s.mapWidth;
+  mapHeight = s.mapHeight;
+
+  if (Array.isArray(s.damagePopups)) {
+    for (const p of s.damagePopups) addDamagePopup(p.x, p.y, p.text, p.color, p.duration);
+  }
+  if (s.prompt && s.prompt.type === "path") {
+    choosePath();
+  } else if (s.prompt && s.prompt.type === "subUpgrade") {
+    const me = s.players.find(p => p.id === myId);
+    const path = me?.path || null;
+    chooseSubUpgrade(s.prompt.level, path);
+  }
+  if (s.gameOver && !gameOverActive) {
+    showGameOver();
+  }
+});
+
+function sendInputs() {
+  const payload = {
+    keys: { w: !!keys["w"], a: !!keys["a"], s: !!keys["s"], d: !!keys["d"] },
+    mouse: { x: mouse.x, y: mouse.y },
+    camera: { x: camera.x, y: camera.y }
+  };
+  socket.emit("input", payload);
+}
+
+respawnBtn.addEventListener("click", () => {
+  socket.emit("respawn");
+  hideGameOver();
+});
+
+function loop() {
+  sendInputs();
+  drawAll();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
