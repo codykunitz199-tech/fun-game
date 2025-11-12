@@ -59,8 +59,9 @@ const gameOverPopup = document.getElementById("gameOverPopup");
 const gameOverStats = document.getElementById("gameOverStats");
 const respawnBtn = document.getElementById("respawnBtn");
 
-// Point to your Render server URL
+// Point to your server URL (local or hosted)
 const socket = io("https://fun-game-1.onrender.com", { transports: ["websocket"] });
+// For local testing: const socket = io("http://localhost:3000", { transports: ["websocket"] });
 
 let myId = null;
 
@@ -88,13 +89,13 @@ let snapshot = {
 
 // Input events
 document.addEventListener("keydown", e => {
-  keys[e.key] = true;
+  keys[e.key.toLowerCase()] = true;
   if ((e.key === " " || e.code === "Space") && !selectionActive && !gameOverActive) {
     e.preventDefault();
     socket.emit("tryPlaceTrap");
   }
 });
-document.addEventListener("keyup", e => keys[e.key] = false);
+document.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
 canvas.addEventListener("mousemove", e => {
   const rect = canvas.getBoundingClientRect();
   mouse.x = e.clientX - rect.left;
@@ -403,12 +404,16 @@ function drawTraps(players) {
 function drawDamagePopupsClient() {
   ctx.save();
   ctx.font = "12px Arial"; ctx.textAlign = "center";
-  for (const p of damagePopups) {
-    const alpha = Math.max(0, 1 - (performance.now() - p.created) / p.duration);
+  const now = performance.now();
+  for (let i = damagePopups.length - 1; i >= 0; i--) {
+    const p = damagePopups[i];
+    const alpha = Math.max(0, 1 - (now - p.created) / p.duration);
+    if (alpha <= 0) { damagePopups.splice(i, 1); continue; }
     ctx.fillStyle = `rgba(255,255,255,${alpha})`;
     ctx.strokeStyle = `rgba(0,0,0,${alpha})`; ctx.lineWidth = 2;
     ctx.strokeText(p.text, p.x - camera.x, p.y - camera.y);
     ctx.fillStyle = p.color; ctx.fillText(p.text, p.x - camera.x, p.y - camera.y);
+    p.y += p.vy;
   }
   ctx.restore();
 }
@@ -542,14 +547,18 @@ socket.on("state", s => {
   if (Array.isArray(s.damagePopups)) {
     for (const p of s.damagePopups) addDamagePopup(p.x, p.y, p.text, p.color, p.duration);
   }
-  if (s.prompt && s.prompt.type === "path") {
+
+  // Prompt handling: show path or upgrade menus based on server signal
+  const me = s.players.find(p => p.id === myId);
+
+  if (s.prompt && s.prompt.type === "path" && me && !selectionActive) {
     choosePath();
-  } else if (s.prompt && s.prompt.type === "subUpgrade") {
-    const me = s.players.find(p => p.id === myId);
+  } else if (s.prompt && s.prompt.type === "subUpgrade" && me && !selectionActive) {
     const path = me?.path || null;
     chooseSubUpgrade(s.prompt.level, path);
   }
-  const me = s.players.find(p => p.id === myId);
+
+  // Game over popup
   if (me?.dead && !gameOverActive) showGameOver();
 });
 
