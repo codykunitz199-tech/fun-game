@@ -77,6 +77,8 @@ function makeDefaultPlayer(id) {
     trapDoubleLayer: false, trapBig: false, trapQuad: false,
     trapHuge: false, trapCluster: false, trapSentry: false,
 
+    _prompt: null, // added: per-player prompt carrier
+
     input: { keys: { w: false, a: false, s: false, d: false }, mouse: { x: 0, y: 0 }, camera: { x: 0, y: 0 } }
   };
 }
@@ -105,6 +107,8 @@ function hardResetCombatState(p) {
   p.trapBaseCooldown = 2000; p.nextTrapTime = 0;
   p.trapDoubleLayer = false; p.trapBig = false; p.trapQuad = false;
   p.trapHuge = false; p.trapCluster = false; p.trapSentry = false;
+
+  p._prompt = null; // ensure no stale prompt on reset
 }
 
 /* ===== Shapes ===== */
@@ -801,7 +805,6 @@ function resolveEntityCollisions() {
     for (const d of p.drones) entities.push({ ref: d, type: "playerDrone", ownerId: p.id, x: d.x, y: d.y, r: d.r, mass: 0.3, movable: true });
     for (const t of p.traps) entities.push({ ref: t, type: "playerTrap", ownerId: p.id, x: t.x, y: t.y, r: t.r, mass: 0.6, movable: true });
   }
-
   if (world.boss.hp > 0) entities.push({ ref: world.boss, type: "boss", ownerId: null, x: world.boss.x, y: world.boss.y, r: world.boss.r, mass: 3.0, movable: true });
   if (world.superBoss.hp > 0) entities.push({ ref: world.superBoss, type: "superBoss", ownerId: null, x: world.superBoss.x, y: world.superBoss.y, r: world.superBoss.rBottom, mass: 5.0, movable: true });
   for (const s of world.shapes) entities.push({ ref: s, type: "shape", ownerId: null, x: s.x, y: s.y, r: s.r, mass: 0.8, movable: true });
@@ -933,8 +936,8 @@ function droneRespawnTick() {
   }
 }
 
-/* ===== Snapshot ===== */
-function buildSnapshotForClient() {
+/* ===== Snapshot (per-player prompt) ===== */
+function buildSnapshotForClient(forPlayerId) {
   return {
     mapWidth: world.mapWidth,
     mapHeight: world.mapHeight,
@@ -952,12 +955,15 @@ function buildSnapshotForClient() {
     superBoss: world.superBoss,
     shapes: world.shapes,
     damagePopups: world.damagePopups.splice(0),
-    prompt: null,
+
+    // Include only the recipient's prompt
+    prompt: world.players.get(forPlayerId)?._prompt || null,
+
     gameOver: false
   };
 }
 
-/* ===== Game tick ===== */
+/* ===== Game tick (per-socket emit + clear prompts after) ===== */
 function tick() {
   for (const p of world.players.values()) {
     updatePlayerInputs(p);
@@ -973,7 +979,14 @@ function tick() {
   updateTraps();
   resolveEntityCollisions();
 
-  io.emit("state", buildSnapshotForClient());
+  // Per-player snapshots ensure upgrade menus appear reliably and avoid desync
+  for (const [id] of world.players) {
+    const sock = io.sockets.sockets.get(id);
+    if (sock) sock.emit("state", buildSnapshotForClient(id));
+  }
+
+  // Clear prompts after sending so client has a chance to show the menu
+  for (const p of world.players.values()) p._prompt = null;
 }
 
 setInterval(() => { if (world.shapes.length < 90) spawnShape(); }, 500);
@@ -995,6 +1008,8 @@ io.on("connection", socket => {
   socket.on("input", payload => {
     const p = world.players.get(socket.id);
     if (!p) return;
+    // Robust validation to ensure remote movement updates reliably
+    if (!payload || !payload.keys || !payload.mouse || !payload.camera) return;
     p.input = payload;
   });
 
@@ -1074,6 +1089,7 @@ io.on("connection", socket => {
     const p = world.players.get(socket.id);
     if (!p) return;
     const fresh = makeDefaultPlayer(socket.id);
+    hardResetCombatState(fresh); // keep respawn clean & consistent
     fresh.nextFireTime = PERF.now();
     world.players.set(socket.id, fresh);
   });
