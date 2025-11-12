@@ -67,7 +67,7 @@ function makeDefaultPlayer(id) {
     titanShell: false, twinSiege: false, shockwaveRound: false,
 
     dronesEnabled: false,
-    droneMax: 10, droneRadius: 8, droneSpeed: 4, droneDamage: 6,
+    droneMax: 10, droneRadius: 8, droneSpeed: 4, droneDamage: 10, // buffed from 6 -> 10
     droneKamikazeBoost: false, droneGuardian: false, droneShooter: false,
     hiveExpansion: false, armoredDrones: false, snareDrones: false,
     droneCommander: false, explosiveDrones: false, hybridDrones: false,
@@ -77,7 +77,7 @@ function makeDefaultPlayer(id) {
     trapDoubleLayer: false, trapBig: false, trapQuad: false,
     trapHuge: false, trapCluster: false, trapSentry: false,
 
-    _prompt: null, // added: per-player prompt carrier
+    _prompt: null,
 
     input: { keys: { w: false, a: false, s: false, d: false }, mouse: { x: 0, y: 0 }, camera: { x: 0, y: 0 } }
   };
@@ -98,7 +98,7 @@ function hardResetCombatState(p) {
   p.piercingShells = false; p.clusterBomb = false; p.siegeMode = false;
   p.titanShell = false; p.twinSiege = false; p.shockwaveRound = false;
 
-  p.droneMax = 10; p.droneRadius = 8; p.droneSpeed = 4; p.droneDamage = 6;
+  p.droneMax = 10; p.droneRadius = 8; p.droneSpeed = 4; p.droneDamage = 10; // buff retained on reset
   p.droneKamikazeBoost = false; p.droneGuardian = false; p.droneShooter = false;
   p.hiveExpansion = false; p.armoredDrones = false; p.snareDrones = false;
   p.droneCommander = false; p.explosiveDrones = false; p.hybridDrones = false;
@@ -108,7 +108,7 @@ function hardResetCombatState(p) {
   p.trapDoubleLayer = false; p.trapBig = false; p.trapQuad = false;
   p.trapHuge = false; p.trapCluster = false; p.trapSentry = false;
 
-  p._prompt = null; // ensure no stale prompt on reset
+  p._prompt = null;
 }
 
 /* ===== Shapes ===== */
@@ -207,6 +207,17 @@ let altIndex = 0;
 function firePlayerGuns(player) {
   if (!player.mainGunEnabled) return;
 
+  // Special firing pattern for Wall of Lead: 20 barrels forward, non-overlapping line
+  if (player.wallOfLead) {
+    for (let i = 0; i < 20; i++) {
+      const offset = (i - 9.5) * 2; // evenly spaced along lateral axis
+      const bx = player.x + Math.cos(player.angle) * player.r + Math.cos(player.angle + Math.PI / 2) * offset;
+      const by = player.y + Math.sin(player.angle) * player.r + Math.sin(player.angle + Math.PI / 2) * offset;
+      shootBulletForPlayer(player, bx, by, player.angle, undefined, undefined, player.bulletDamageWall);
+    }
+    return; // skip normal multi-barrel logic
+  }
+
   let spread = player.precisionBattery ? 0.12 : 0.2;
   if (player.scattershot) spread += 0.05;
   const timeOffset = player.rotaryTurret ? (Math.sin(PERF.now() / 300) * 0.15) : 0;
@@ -283,13 +294,13 @@ function tryPlaceTrap(player) {
   let hp = 60;
 
   if (player.trapDoubleLayer) count = 2;
-  if (player.trapBig) { dmg *= 3; size = 16; cooldown = Math.max(cooldown, 3000); hp = 120; }
+  if (player.trapBig) { dmg *= 3; size = 16; cooldown = Math.max(cooldown, 3000); hp = 200; } // hp reduced
   if (player.trapQuad) { count = 4; dmg = Math.floor(dmg * 0.8); }
-  if (player.trapHuge) { dmg = player.trapBaseDamage * 9; size = 20; cooldown = Math.max(cooldown, 4000); hp = 500; }
+  if (player.trapHuge) { dmg = player.trapBaseDamage * 9; size = 20; cooldown = Math.max(cooldown, 4000); hp = 200; } // hp reduced
 
   const isCluster = player.trapCluster;
   const isSentry = player.trapSentry;
-  if (isCluster) { size = 20; hp = 500; cooldown = Math.max(cooldown, 4000); }
+  if (isCluster) { size = 20; hp = 200; cooldown = Math.max(cooldown, 4000); } // hp reduced from 500 -> 200
 
   const spread = count > 1 ? 0.2 : 0;
   const flySpeed = 6;
@@ -306,15 +317,16 @@ function tryPlaceTrap(player) {
       cluster: isCluster, sentry: isSentry,
       nextSentryShot: PERF.now() + 1500,
       vx: Math.cos(ang) * flySpeed, vy: Math.sin(ang) * flySpeed,
-      stopTime: PERF.now() + flyDuration
+      stopTime: PERF.now() + flyDuration,
+      spawnTime: PERF.now() // despawn tracking
     });
   }
   player.nextTrapTime = nowT + cooldown;
 }
 
 function trapClusterExplode(owner, t) {
-  const count = 10;
-  const shardDamage = 5;
+  const count = 5; // reduced from 10
+  const shardDamage = 15; // increased from 5
   for (let i = 0; i < count; i++) {
     const ang = Math.random() * Math.PI * 2;
     const dx = Math.cos(ang) * 7;
@@ -611,6 +623,10 @@ function updatePlayerDrones() {
 
     for (let di = owner.drones.length - 1; di >= 0; di--) {
       const d = owner.drones[di];
+
+      // Despawn drones after 30s
+      if (d.spawnTime && PERF.now() - d.spawnTime > 30000) { owner.drones.splice(di, 1); continue; }
+
       const dx = owner.input.mouse.x + owner.input.camera.x - d.x;
       const dy = owner.input.mouse.y + owner.input.camera.y - d.y;
       const distToMouse = Math.hypot(dx, dy);
@@ -690,7 +706,8 @@ function updatePlayerDrones() {
           const angleToMouse = Math.atan2(owner.input.mouse.y + owner.input.camera.y - d.y, owner.input.mouse.x + owner.input.camera.x - d.x);
           owner.bullets.push({
             x: d.x, y: d.y, dx: Math.cos(angleToMouse) * 7, dy: Math.sin(angleToMouse) * 7,
-            r: 4, source: "player", ownerId: owner.id, dmg: 3, explosive: false, pierce: 0,
+            r: 4, source: "player", ownerId: owner.id, dmg: 6, // shooter drones buffed from 3 -> 6
+            explosive: false, pierce: 0,
             spawnTime: PERF.now(), lifeTime: 2000, hitCooldown: {}
           });
           d.nextShootTime = PERF.now() + 1800;
@@ -704,6 +721,9 @@ function updateTraps() {
   for (const owner of world.players.values()) {
     for (let ti = owner.traps.length - 1; ti >= 0; ti--) {
       const t = owner.traps[ti];
+
+      // Despawn traps after 30s
+      if (t.spawnTime && PERF.now() - t.spawnTime > 30000) { owner.traps.splice(ti, 1); continue; }
 
       if (t.stopTime && PERF.now() < t.stopTime) {
         t.x += t.vx; t.y += t.vy;
@@ -849,6 +869,7 @@ function checkLevelMilestones(player) {
   const threshold = player.level * 50;
   if (player.level < 12 && player.xp >= threshold) {
     player.level++;
+    player.maxHp += 10; // +10 max HP per level
     player.hp = player.maxHp;
     if (!player.path && player.level >= 3 && player.level % 3 === 0) {
       player._prompt = { type: "path" };
@@ -913,7 +934,8 @@ function playerFireTick(player) {
   const t = PERF.now();
   if (!player.dead && player.mainGunEnabled && t >= player.nextFireTime) {
     firePlayerGuns(player);
-    player.nextFireTime = t + player.fireDelay;
+    // Alternating Fire should feel snappier: override to 100ms
+    player.nextFireTime = t + (player.alternatingFire ? 100 : player.fireDelay);
   }
 }
 function droneRespawnTick() {
@@ -925,7 +947,7 @@ function droneRespawnTick() {
         const spawnDist = p.r + 12;
         const nx = p.x + Math.cos(angle) * spawnDist;
         const ny = p.y + Math.sin(angle) * spawnDist;
-        const newDrone = { x: nx, y: ny, r: p.droneRadius, speed: p.droneSpeed, hp: p.armoredDrones ? 2 : 1, nextShootTime: PERF.now() + 1800 };
+        const newDrone = { x: nx, y: ny, r: p.droneRadius, speed: p.droneSpeed, hp: p.armoredDrones ? 2 : 1, nextShootTime: PERF.now() + 1800, spawnTime: PERF.now() };
         let collides = false;
         for (const d of p.drones) {
           if (Math.hypot(d.x - newDrone.x, d.y - newDrone.y) < d.r + newDrone.r) { collides = true; break; }
@@ -956,7 +978,6 @@ function buildSnapshotForClient(forPlayerId) {
     shapes: world.shapes,
     damagePopups: world.damagePopups.splice(0),
 
-    // Include only the recipient's prompt
     prompt: world.players.get(forPlayerId)?._prompt || null,
 
     gameOver: false
@@ -979,13 +1000,11 @@ function tick() {
   updateTraps();
   resolveEntityCollisions();
 
-  // Per-player snapshots ensure upgrade menus appear reliably and avoid desync
   for (const [id] of world.players) {
     const sock = io.sockets.sockets.get(id);
     if (sock) sock.emit("state", buildSnapshotForClient(id));
   }
 
-  // Clear prompts after sending so client has a chance to show the menu
   for (const p of world.players.values()) p._prompt = null;
 }
 
@@ -1008,7 +1027,6 @@ io.on("connection", socket => {
   socket.on("input", payload => {
     const p = world.players.get(socket.id);
     if (!p) return;
-    // Robust validation to ensure remote movement updates reliably
     if (!payload || !payload.keys || !payload.mouse || !payload.camera) return;
     p.input = payload;
   });
@@ -1029,7 +1047,8 @@ io.on("connection", socket => {
           x: p.x + Math.cos(ang) * (p.r + 12),
           y: p.y + Math.sin(ang) * (p.r + 12),
           r: p.droneRadius, speed: p.droneSpeed, hp: p.armoredDrones ? 2 : 1,
-          nextShootTime: PERF.now() + 1800
+          nextShootTime: PERF.now() + 1800,
+          spawnTime: PERF.now()
         });
       }
     } else if (key === "trap") {
@@ -1048,7 +1067,7 @@ io.on("connection", socket => {
     if (key === "hiveExpansion") { p.hiveExpansion = true; p.droneMax = 15; }
     if (key === "armoredDrones") p.armoredDrones = true;
     if (key === "snareDrones") p.snareDrones = true;
-    if (key === "droneCommander") { p.droneCommander = true; p.droneMax = 20; }
+    if (key === "droneCommander") { p.droneCommander = true; p.droneMax = 30; } // increased to 30
     if (key === "explosiveDrones") p.explosiveDrones = true;
     if (key === "hybridDrones") { p.hybridDrones = true; const t = PERF.now(); for (const d of p.drones) d.nextShootTime = t + 1800; }
     // Multi
@@ -1089,7 +1108,7 @@ io.on("connection", socket => {
     const p = world.players.get(socket.id);
     if (!p) return;
     const fresh = makeDefaultPlayer(socket.id);
-    hardResetCombatState(fresh); // keep respawn clean & consistent
+    hardResetCombatState(fresh);
     fresh.nextFireTime = PERF.now();
     world.players.set(socket.id, fresh);
   });
