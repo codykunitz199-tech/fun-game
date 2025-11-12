@@ -68,7 +68,7 @@ function makeDefaultPlayer(id) {
     titanShell: false, twinSiege: false, shockwaveRound: false,
 
     dronesEnabled: false,
-    droneMax: 10, droneRadius: 8, droneSpeed: 4, droneDamage: 10, // buffed base
+    droneMax: 10, droneRadius: 8, droneSpeed: 4, droneDamage: 10,
     droneKamikazeBoost: false, droneGuardian: false, droneShooter: false,
     hiveExpansion: false, armoredDrones: false, snareDrones: false,
     droneCommander: false, explosiveDrones: false, hybridDrones: false,
@@ -285,6 +285,7 @@ function firePlayerGuns(player) {
     }
   };
 
+  // Alternating Fire is disabled when Wall of Lead is active (no fusion)
   if (player.alternatingFire && !player.wallOfLead) {
     const angle = startAngle + altIndex * spread;
     fireBarrel(angle);
@@ -1200,20 +1201,19 @@ io.on("connection", socket => {
     if (key === "trapSentry") p.trapSentry = true;
   });
 
+  // Final form
   socket.on("finalPick", key => {
     const p = world.players.get(socket.id);
     if (!p || p.isDreadnought || p.level < 100) return;
-    // Apply final form
     p.isDreadnought = true;
-    p.path = null; // final class overwrites path logic
+    p.path = null;
     if (key === "dreadCannon") {
       p.dreadType = "cannon";
       p.r = 20 * 4; // 4x size
       p.speed = 3 * 0.9; // 0.9x speed
       p.maxHp = 3000; p.hp = p.maxHp;
       p.regenPerSec = 10;
-      p.mainGunEnabled = true; // massive cannon fire uses main gun
-      // simplify other combat flags
+      p.mainGunEnabled = true;
       p.barrels = 1; p.alternatingFire = false; p.wallOfLead = false;
     } else if (key === "dreadDrone") {
       p.dreadType = "drone";
@@ -1221,18 +1221,20 @@ io.on("connection", socket => {
       p.speed = 3 * 0.9;
       p.maxHp = 2500; p.hp = p.maxHp;
       p.regenPerSec = 0;
-      p.mainGunEnabled = false; // no primary gun, uses spawners
+      p.mainGunEnabled = false;
       p.dreadDroneSpawnerA = PERF.now();
       p.dreadDroneSpawnerB = PERF.now();
     }
   });
 
+  // Place trap
   socket.on("tryPlaceTrap", () => {
     const p = world.players.get(socket.id);
     if (!p) return;
     tryPlaceTrap(p);
   });
 
+  // Respawn
   socket.on("respawn", () => {
     const p = world.players.get(socket.id);
     if (!p) return;
@@ -1240,6 +1242,20 @@ io.on("connection", socket => {
     hardResetCombatState(fresh);
     fresh.nextFireTime = PERF.now();
     world.players.set(socket.id, fresh);
+  });
+
+  // NEW: Level to 99 on demand (only if level >= 13)
+  socket.on("levelTo99", () => {
+    const p = world.players.get(socket.id);
+    if (!p) return;
+    if (p.level >= 13 && p.level < 99) {
+      const diff = 99 - p.level;
+      p.level = 99;
+      p.maxHp += diff * 10; // maintain +10 max HP per level
+      p.hp = p.maxHp;
+      // Clear any pending prompts; next prompt will be final at 100 via normal leveling
+      p._prompt = null;
+    }
   });
 
   socket.on("disconnect", () => {
