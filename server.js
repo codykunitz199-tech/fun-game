@@ -1245,18 +1245,21 @@ io.on("connection", socket => {
   });
 
   // NEW: Level to 99 on demand (only if level >= 13)
-  socket.on("levelTo99", () => {
-    const p = world.players.get(socket.id);
-    if (!p) return;
-    if (p.level >= 13 && p.level < 99) {
-      const diff = 99 - p.level;
-      p.level = 99;
-      p.maxHp += diff * 10; // maintain +10 max HP per level
-      p.hp = p.maxHp;
-      // Clear any pending prompts; next prompt will be final at 100 via normal leveling
-      p._prompt = null;
-    }
-  });
+ socket.on("levelTo99", () => {
+  const p = world.players.get(socket.id);
+  if (!p) return;
+  if (p.level >= 13 && p.level < 99) {
+    const diff = 99 - p.level;
+    p.level = 99;
+    p.maxHp += diff * 10;
+    p.hp = p.maxHp;
+
+    // NEW: set XP to match level 99 threshold
+    p.xp = p.level * 50;  // ensures checkLevelMilestones sees you at 99
+
+    p._prompt = null;
+  }
+});
 
   socket.on("disconnect", () => {
     world.players.delete(socket.id);
@@ -1267,3 +1270,4 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
