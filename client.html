@@ -531,7 +531,7 @@ function drawAll() {
   drawDamagePopupsClient();
 }
 
-/* ===== Networking ===== *//
+/* ===== Networking ===== */
 socket.on("connect", () => { myId = socket.id; });
 
 socket.on("state", s => {
@@ -576,4 +576,3 @@ loop();
 </script>
 </body>
 </html>
-
