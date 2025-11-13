@@ -67,12 +67,14 @@ function makeDefaultPlayer(id) {
     piercingShells: false, clusterBomb: false, siegeMode: false,
     titanShell: false, twinSiege: false, shockwaveRound: false,
 
+    // Drone path
     dronesEnabled: false,
     droneMax: 10, droneRadius: 8, droneSpeed: 4, droneDamage: 10,
     droneKamikazeBoost: false, droneGuardian: false, droneShooter: false,
     hiveExpansion: false, armoredDrones: false, snareDrones: false,
     droneCommander: false, explosiveDrones: false, hybridDrones: false,
 
+    // Trap path
     trapLayer: false, trapMax: 10, trapBaseDamage: 10,
     trapBaseSize: 12, trapBaseCooldown: 2000, nextTrapTime: 0,
     trapDoubleLayer: false, trapBig: false, trapQuad: false,
@@ -83,10 +85,10 @@ function makeDefaultPlayer(id) {
     dreadType: null, // "cannon" | "drone"
     regenPerSec: 0,
 
-    // Drone dreadnought spawners
+    // Drone dread spawners + cap
     dreadDroneSpawnerA: 0, dreadDroneSpawnerB: 0,
-    dreadDroneFireCooldown: 0,
-    dreadDroneCap: 120, // NEW: hard cap for super drones
+    dreadDroneCap: 50, // HARD CAP: 50
+
     _prompt: null,
 
     input: { keys: { w: false, a: false, s: false, d: false }, mouse: { x: 0, y: 0 }, camera: { x: 0, y: 0 } }
@@ -98,8 +100,8 @@ function hardResetCombatState(p) {
 
   p.barrels = 1; p.bulletSize = 5; p.bulletDamage = 10;
   p.baseBasicDamage = 10; p.bulletDamageWall = Math.round(p.baseBasicDamage / 3);
-
   p.fireDelay = 300;
+
   p.alternatingFire = false; p.rotaryTurret = false; p.sideSponsons = false;
   p.scattershot = false; p.quadCore = false; p.artillery = false;
   p.wallOfLead = false; p.precisionBattery = false;
@@ -119,7 +121,8 @@ function hardResetCombatState(p) {
   p.trapHuge = false; p.trapCluster = false; p.trapSentry = false;
 
   p.isDreadnought = false; p.dreadType = null; p.regenPerSec = 0;
-  p.dreadDroneSpawnerA = 0; p.dreadDroneSpawnerB = 0; p.dreadDroneFireCooldown = 0;
+  p.dreadDroneSpawnerA = 0; p.dreadDroneSpawnerB = 0; p.dreadDroneCap = 50;
+
   p._prompt = null;
 }
 
@@ -153,15 +156,20 @@ function spawnShape() {
   });
 }
 
-/* ===== Targeting ===== */
+/* ===== Targeting helpers (still used by bosses/traps only) ===== */
 function getClosestTarget(x, y, excludeOwnerId = null) {
   const candidates = [];
   for (const p of world.players.values()) {
     if (p.dead) continue;
     candidates.push({ x: p.x, y: p.y, type: "player", ref: p });
-    if (p.path === "drone" || p.isDreadnought) for (const d of p.drones) candidates.push({ x: d.x, y: d.y, type: "drone", ref: { owner: p, d } });
+    if (p.path === "drone" || p.isDreadnought) {
+      for (const d of p.drones) {
+        candidates.push({ x: d.x, y: d.y, type: "drone", ref: { owner: p, d } });
+      }
+    }
   }
   if (world.boss.hp > 0) candidates.push({ x: world.boss.x, y: world.boss.y, type: "boss", ref: world.boss });
+
   if (world.shapes.length) {
     let nearest = null; let minD = Infinity;
     for (const s of world.shapes) {
@@ -170,6 +178,7 @@ function getClosestTarget(x, y, excludeOwnerId = null) {
     }
     if (nearest) candidates.push({ x: nearest.x, y: nearest.y, type: "shape", ref: nearest });
   }
+
   if (!candidates.length) return null;
   let best = null, bestD = Infinity;
   for (const t of candidates) {
@@ -223,7 +232,7 @@ function firePlayerGuns(player) {
     return;
   }
 
-  // Wall of Lead pattern: 20 forward barrels, no fusion with Alternating Fire
+  // Wall of Lead pattern
   if (player.wallOfLead) {
     for (let i = 0; i < 20; i++) {
       const offset = (i - 9.5) * 2;
@@ -378,6 +387,8 @@ function updatePlayerInputs(player) {
   if (keys.d) player.x += player.speed;
   player.x = clamp(player.x, player.r, mapWidth - player.r);
   player.y = clamp(player.y, player.r, mapHeight - player.r);
+
+  // Aim follows mouse + camera offset
   const dxAim = mouse.x + (camera?.x || 0) - player.x;
   const dyAim = mouse.y + (camera?.y || 0) - player.y;
   player.angle = Math.atan2(dyAim, dxAim);
@@ -529,7 +540,11 @@ function updatePlayerBullets() {
             tryExplodeSplash();
             if (player.clusterBomb) spawnFragments(player, b.x, b.y, b.dmg);
             b.hitCooldown[entityIdB] = PERF.now() + IMMUNITY_MS;
-            if (world.boss.hp <= 0) awardBossKill(2000, b.ownerId);
+
+            if (world.boss.hp <= 0) {
+              awardBossKill(2000, b.ownerId);
+            }
+
             if (b.pierce > 0) b.pierce--; else player.bullets.splice(i, 1);
             continue;
           }
@@ -626,7 +641,7 @@ function updateEnemyBullets() {
   }
 }
 
-/* ===== Dreadnought spawners (drone dread) ===== */
+/* ===== Drone Dread spawners ===== */
 function spawnDreadDrone(owner, fromAngle) {
   const spawnDist = owner.r + 10;
   const dx = Math.cos(fromAngle), dy = Math.sin(fromAngle);
@@ -658,12 +673,13 @@ function removeDroneOnHit(owner, di) {
 
 function updatePlayerDrones() {
   for (const owner of world.players.values()) {
-    if ((owner.path !== "drone" && !(owner.isDreadnought && owner.dreadType === "drone")) || owner.dead) continue;
+    const isDroneClass = owner.path === "drone";
+    const isDroneDread = owner.isDreadnought && owner.dreadType === "drone";
+    if ((!isDroneClass && !isDroneDread) || owner.dead) continue;
 
-    // Drone Dread spawners: respect cap to avoid infinite buildup
-    if (owner.isDreadnought && owner.dreadType === "drone") {
+    // Drone Dread spawners: respect CAP=50 and spawn rate (2 each every 0.5s)
+    if (isDroneDread) {
       const now = PERF.now();
-      // Only spawn if below cap
       if (owner.drones.length < owner.dreadDroneCap) {
         if (now >= owner.dreadDroneSpawnerA) {
           const angA = owner.angle - 0.25;
@@ -678,7 +694,6 @@ function updatePlayerDrones() {
           owner.dreadDroneSpawnerB = now + 500;
         }
       } else {
-        // If at cap, push next spawn slightly forward to avoid tight loops
         owner.dreadDroneSpawnerA = now + 200;
         owner.dreadDroneSpawnerB = now + 200;
       }
@@ -687,18 +702,15 @@ function updatePlayerDrones() {
     for (let di = owner.drones.length - 1; di >= 0; di--) {
       const d = owner.drones[di];
 
-      // Despawn drones after 30s
+      // Despawn after ~30s
       if (d.spawnTime && PERF.now() - d.spawnTime > 30000) { owner.drones.splice(di, 1); continue; }
 
-      // Movement: always move — target closest entity; if none, move toward mouse
-      const targetObj = getClosestTarget(d.x, d.y, owner.id);
-      let tx = owner.input.mouse.x + owner.input.camera.x;
-      let ty = owner.input.mouse.y + owner.input.camera.y;
-      if (targetObj) { tx = targetObj.x; ty = targetObj.y; }
-
+      // Movement — ONLY follow mouse (ignore targets)
+      const tx = owner.input.mouse.x + (owner.input.camera?.x || 0);
+      const ty = owner.input.mouse.y + (owner.input.camera?.y || 0);
       const dx = tx - d.x, dy = ty - d.y;
-      const distToTarget = Math.hypot(dx, dy);
-      if (distToTarget > 0.001) { d.x += (dx / distToTarget) * d.speed; d.y += (dy / distToTarget) * d.speed; }
+      const distToMouse = Math.hypot(dx, dy);
+      if (distToMouse > 0.001) { d.x += (dx / distToMouse) * d.speed; d.y += (dy / distToMouse) * d.speed; }
       d.x = clamp(d.x, d.r, mapWidth - d.r);
       d.y = clamp(d.y, d.r, mapHeight - d.r);
 
@@ -760,18 +772,15 @@ function updatePlayerDrones() {
         }
       }
 
-      // Shooting behavior:
-      // Shooter enabled for shooter/hybrid or for super drones (drone dread).
+      // Shooting — aim at mouse (ignore targets)
       const shooterEnabled = owner.droneShooter || owner.hybridDrones || d.superDrone;
       const shooterInterval = d.superDrone ? 3000 : 1800;
       const dmgPerShot = d.superDrone ? 10 : 6;
       if (shooterEnabled) {
         if (!d.nextShootTime) d.nextShootTime = PERF.now() + shooterInterval;
         if (PERF.now() >= d.nextShootTime) {
-          // NEW: aim at closest target; if none, aim at owner's mouse (drone dread request)
-          const target = getClosestTarget(d.x, d.y, owner.id);
-          const aimX = target ? target.x : (owner.input.mouse.x + owner.input.camera.x);
-          const aimY = target ? target.y : (owner.input.mouse.y + owner.input.camera.y);
+          const aimX = owner.input.mouse.x + (owner.input.camera?.x || 0);
+          const aimY = owner.input.mouse.y + (owner.input.camera?.y || 0);
           const ang = Math.atan2(aimY - d.y, aimX - d.x);
           owner.bullets.push({
             x: d.x, y: d.y,
@@ -805,7 +814,7 @@ function updateTraps() {
     for (let ti = owner.traps.length - 1; ti >= 0; ti--) {
       const t = owner.traps[ti];
 
-      // Despawn traps after 30s
+      // Despawn after ~30s
       if (t.spawnTime && PERF.now() - t.spawnTime > 30000) { owner.traps.splice(ti, 1); continue; }
 
       if (t.stopTime && PERF.now() < t.stopTime) {
@@ -830,6 +839,7 @@ function updateTraps() {
         }
       }
 
+      // Enemy bullets vs traps
       for (const set of [world.boss.bullets, world.superBoss.bullets]) {
         for (let bi = set.length - 1; bi >= 0; bi--) {
           const b = set[bi];
@@ -846,6 +856,7 @@ function updateTraps() {
       }
       if (!owner.traps[ti]) continue;
 
+      // Trap contacts
       for (let si = world.shapes.length - 1; si >= 0; si--) {
         const s = world.shapes[si];
         const dist = Math.hypot(t.x - s.x, t.y - s.y);
@@ -1158,7 +1169,7 @@ io.on("connection", socket => {
   socket.on("applyUpgrade", key => {
     const p = world.players.get(socket.id);
     if (!p) return;
-    // Drone
+    // Drone upgrades
     if (key === "droneKamikazeBoost") p.droneKamikazeBoost = true;
     if (key === "droneGuardian") p.droneGuardian = true;
     if (key === "droneShooter") { p.droneShooter = true; const t = PERF.now(); for (const d of p.drones) d.nextShootTime = t + 1800; }
@@ -1219,7 +1230,7 @@ io.on("connection", socket => {
       p.mainGunEnabled = false;
       p.dreadDroneSpawnerA = PERF.now();
       p.dreadDroneSpawnerB = PERF.now();
-      p.dreadDroneCap = 120; // ensure cap defined
+      p.dreadDroneCap = 50; // enforce cap
     }
   });
 
@@ -1232,8 +1243,6 @@ io.on("connection", socket => {
 
   // Respawn
   socket.on("respawn", () => {
-    const p = world.players.get(socket.id);
-    if (!p) return;
     const fresh = makeDefaultPlayer(socket.id);
     hardResetCombatState(fresh);
     fresh.nextFireTime = PERF.now();
