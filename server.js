@@ -87,7 +87,7 @@ function makeDefaultPlayer(id) {
 
     // Drone dread spawners + cap
     dreadDroneSpawnerA: 0, dreadDroneSpawnerB: 0,
-    dreadDroneCap: 50, // HARD CAP: 50
+    dreadDroneCap: 50, // HARD CAP set to 50 per your request
 
     _prompt: null,
 
@@ -156,7 +156,7 @@ function spawnShape() {
   });
 }
 
-/* ===== Targeting helpers (still used by bosses/traps only) ===== */
+/* ===== Targeting helpers (kept for bosses/traps only) ===== */
 function getClosestTarget(x, y, excludeOwnerId = null) {
   const candidates = [];
   for (const p of world.players.values()) {
@@ -478,11 +478,20 @@ function updateShapes() {
 function awardBossKill(xpAward, killerId) {
   const killer = world.players.get(killerId);
   if (killer) killer.xp += xpAward;
-  world.boss.hp = world.boss.maxHp;
-  world.boss.x = randInRange(world.boss.r, mapWidth - world.boss.r);
-  world.boss.y = randInRange(world.boss.r, mapHeight - world.boss.r);
+  // 60-second respawn (cooldown)
+  world.boss.hp = 0;
   world.boss.bullets = [];
-  addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Respawn", "#ffffff");
+  addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Boss Defeated", "#ffffff");
+  if (!world._bossRespawnTimer) {
+    world._bossRespawnTimer = setTimeout(() => {
+      world.boss.hp = world.boss.maxHp;
+      world.boss.x = randInRange(world.boss.r, mapWidth - world.boss.r);
+      world.boss.y = randInRange(world.boss.r, mapHeight - world.boss.r);
+      world.boss.bullets = [];
+      addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Respawn", "#ffffff");
+      world._bossRespawnTimer = null;
+    }, 60000);
+  }
 }
 
 function updatePlayerBullets() {
@@ -1030,7 +1039,7 @@ function superBossSpawnDrone() {
   }
 }
 
-function playerFireTick(player) {
+function firePlayerGunsTick(player) {
   const t = PERF.now();
   if (!player.dead && player.mainGunEnabled && t >= player.nextFireTime) {
     firePlayerGuns(player);
@@ -1060,7 +1069,18 @@ function droneRespawnTick() {
 }
 
 /* ===== Snapshot ===== */
+function updateCrowns() {
+  let best = null;
+  for (const p of world.players.values()) {
+    if (p.dead) continue;
+    if (!best || p.xp > best.xp) best = p;
+  }
+  for (const p of world.players.values()) {
+    p.hasCrown = (best && p.id === best.id);
+  }
+}
 function buildSnapshotForClient(forPlayerId) {
+  updateCrowns();
   return {
     mapWidth: world.mapWidth,
     mapHeight: world.mapHeight,
@@ -1074,7 +1094,8 @@ function buildSnapshotForClient(forPlayerId) {
       traps: p.traps, drones: p.drones, bullets: p.bullets,
       trapLayer: p.trapLayer, trapMax: p.trapMax, nextTrapTime: p.nextTrapTime,
       wallOfLead: p.wallOfLead, alternatingFire: p.alternatingFire,
-      isDreadnought: p.isDreadnought, dreadType: p.dreadType
+      isDreadnought: p.isDreadnought, dreadType: p.dreadType,
+      hasCrown: p.hasCrown || false
     })),
     boss: world.boss,
     superBoss: world.superBoss,
@@ -1089,7 +1110,7 @@ function buildSnapshotForClient(forPlayerId) {
 function tick() {
   for (const p of world.players.values()) {
     updatePlayerInputs(p);
-    playerFireTick(p);
+    firePlayerGunsTick(p);
     checkLevelMilestones(p);
 
     // Cannon dread regen: 10 hp/sec
@@ -1116,7 +1137,7 @@ function tick() {
 }
 
 /* ===== Spawners & tick timers ===== */
-setInterval(() => { if (world.shapes.length < 180) spawnShape(); }, 250); // 2× faster and 2× cap
+setInterval(() => { if (world.shapes.length < 180) spawnShape(); }, 250); // faster shapes, kept from your build
 setInterval(bossFire, 1000);
 setInterval(superBossFireBottom, 2500);
 setInterval(superBossFireMiddle, 1000);
