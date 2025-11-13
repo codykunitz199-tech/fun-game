@@ -59,9 +59,11 @@ const gameOverPopup = document.getElementById("gameOverPopup");
 const gameOverStats = document.getElementById("gameOverStats");
 const respawnBtn = document.getElementById("respawnBtn");
 
-// Point to your server URL (local or hosted)
-const socket = io("https://fun-game-8.onrender.com", { transports: ["websocket"] });
-// For local testing: const socket = io("http://localhost:3000", { transports: ["websocket"] });
+// Point to your server URL (hosted or local)
+// For local testing:
+const socket = io("http://localhost:3000", { transports: ["websocket"] });
+// If hosted, swap to your URL:
+// const socket = io("https://your-hosted-server.example.com", { transports: ["websocket"] });
 
 let myId = null;
 
@@ -89,10 +91,21 @@ let snapshot = {
 
 // Input events
 document.addEventListener("keydown", e => {
-  keys[e.key.toLowerCase()] = true;
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+
+  // Place trap on Space
   if ((e.key === " " || e.code === "Space") && !selectionActive && !gameOverActive) {
     e.preventDefault();
     socket.emit("tryPlaceTrap");
+  }
+
+  // Level to 99 when pressing 'l' if player level >= 13 and < 99
+  if (k === "l" && !selectionActive && !gameOverActive) {
+    const me = snapshot.players.find(p => p.id === myId);
+    if (me && me.level >= 13 && me.level < 99) {
+      socket.emit("levelTo99");
+    }
   }
 });
 document.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
@@ -130,15 +143,31 @@ function drawPreviewTank(ctx2, key) {
   const w = ctx2.canvas.width, h = ctx2.canvas.height;
   ctx2.clearRect(0, 0, w, h);
   ctx2.save(); ctx2.translate(w/2, h/2);
-  ctx2.fillStyle = "cyan"; ctx2.beginPath(); ctx2.arc(0, 0, 20, 0, Math.PI*2); ctx2.fill();
-  const drawBarrel = (ang, len=18, color="white") => { ctx2.save(); ctx2.rotate(ang); ctx2.fillStyle = color; ctx2.fillRect(20, -5, len, 10); ctx2.restore(); };
-  const visuals = {
-    multi: () => { drawBarrel(-0.2); drawBarrel(0); drawBarrel(0.2); },
-    big:   () => { drawBarrel(0, 28); },
-    drone: () => { ctx2.fillStyle="yellow"; for(let i=0;i<3;i++){ const ang=i*(Math.PI*2/3); ctx2.beginPath(); ctx2.arc(Math.cos(ang)*35,Math.sin(ang)*35,6,0,Math.PI*2); ctx2.fill(); } },
-    trap:  () => { ctx2.fillStyle="#66ff66"; ctx2.fillRect(-8, -8, 16, 16); drawBarrel(0, 18, "#66ff66"); }
-  };
-  (visuals[key] ?? (()=>{}))();
+  if (key === "dreadCannon") {
+    ctx2.strokeStyle = "cyan"; ctx2.lineWidth = 4;
+    ctx2.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = i * (Math.PI * 2 / 6);
+      const px = Math.cos(ang) * 35, py = Math.sin(ang) * 35;
+      if (i === 0) ctx2.moveTo(px, py); else ctx2.lineTo(px, py);
+    }
+    ctx2.closePath(); ctx2.stroke();
+    ctx2.fillStyle = "white"; ctx2.fillRect(35, -8, 40, 16);
+  } else if (key === "dreadDrone") {
+    ctx2.fillStyle = "#66ff66"; ctx2.fillRect(-35, -35, 70, 70);
+    ctx2.fillStyle = "#ffcc66"; ctx2.fillRect(35, -6, 30, 12);
+    ctx2.fillStyle = "#ffcc66"; ctx2.fillRect(-65, -6, 30, 12);
+  } else {
+    ctx2.fillStyle = "cyan"; ctx2.beginPath(); ctx2.arc(0, 0, 20, 0, Math.PI*2); ctx2.fill();
+    const drawBarrel = (ang, len=18, color="white") => { ctx2.save(); ctx2.rotate(ang); ctx2.fillStyle = color; ctx2.fillRect(20, -5, len, 10); ctx2.restore(); };
+    const visuals = {
+      multi: () => { drawBarrel(-0.2); drawBarrel(0); drawBarrel(0.2); },
+      big:   () => { drawBarrel(0, 28); },
+      drone: () => { ctx2.fillStyle="yellow"; for(let i=0;i<3;i++){ const ang=i*(Math.PI*2/3); ctx2.beginPath(); ctx2.arc(Math.cos(ang)*35,Math.sin(ang)*35,6,0,Math.PI*2); ctx2.fill(); } },
+      trap:  () => { ctx2.fillStyle="#66ff66"; ctx2.fillRect(-8, -8, 16, 16); ctx2.fillStyle="#66ff66"; ctx2.fillRect(20, -5, 18, 10); }
+    };
+    (visuals[key] ?? (()=>{}))();
+  }
   ctx2.restore();
 }
 function injectChoices(choices, title, desc, onPick) {
@@ -173,7 +202,7 @@ function chooseSubUpgrade(level, path) {
       injectChoices([
         { key: "droneKamikazeBoost", label: "Kamikaze Swarm (+damage)", keyPreview: "drone" },
         { key: "droneGuardian", label: "Guardian Orbit (intercept bullets)", keyPreview: "drone" },
-        { key: "droneShooter", label: "Shooter Drones (weak shots, 3× slower)", keyPreview: "drone" }
+        { key: "droneShooter", label: "Shooter Drones (6 dmg shots, 3× slower)", keyPreview: "drone" }
       ], "Drones (Level 6)", "Pick one:", sendPick);
     } else if (level === 9) {
       injectChoices([
@@ -183,7 +212,7 @@ function chooseSubUpgrade(level, path) {
       ], "Drones (Level 9)", "Pick one:", sendPick);
     } else if (level === 12) {
       injectChoices([
-        { key: "droneCommander", label: "Drone Commander (faster respawn, max 20)", keyPreview: "drone" },
+        { key: "droneCommander", label: "Drone Commander (faster respawn, max 30)", keyPreview: "drone" },
         { key: "explosiveDrones", label: "Explosive Drones (AoE on death)", keyPreview: "drone" },
         { key: "hybridDrones", label: "Hybrid Drones (shoot & kamikaze, 3× slower)", keyPreview: "drone" }
       ], "Drones (Level 12)", "Final pick:", sendPick);
@@ -232,25 +261,32 @@ function chooseSubUpgrade(level, path) {
     if (level === 6) {
       injectChoices([
         { key: "trapDoubleLayer", label: "Double Layer", keyPreview: "trap" },
-        { key: "trapBig", label: "Big Trap (120 HP, 3× dmg)", keyPreview: "trap" }
+        { key: "trapBig", label: "Big Trap (200 HP, 3× dmg)", keyPreview: "trap" }
       ], "Trap Layer (Level 6)", "Pick one:", sendPick);
     } else if (level === 9) {
       injectChoices([
         { key: "trapQuad", label: "Quad Trap (-20% dmg)", keyPreview: "trap" },
-        { key: "trapHuge", label: "Huge Trap (500 HP, 9× dmg)", keyPreview: "trap" }
+        { key: "trapHuge", label: "Huge Trap (200 HP, 9× dmg)", keyPreview: "trap" }
       ], "Trap Layer (Level 9)", "Pick one:", sendPick);
     } else if (level === 12) {
       injectChoices([
-        { key: "trapCluster", label: "Cluster Trap (Huge + shards)", keyPreview: "trap" },
+        { key: "trapCluster", label: "Cluster Trap (200 HP, 5 shards × 15 dmg)", keyPreview: "trap" },
         { key: "trapSentry", label: "Sentry Trap (auto 3 dmg)", keyPreview: "trap" }
       ], "Trap Layer (Level 12)", "Final pick:", sendPick);
     }
   }
 }
+function chooseFinalDread() {
+  const sendPick = key => socket.emit("finalPick", key);
+  injectChoices([
+    { key: "dreadCannon", label: "Cannon Dreadnought (hexagon, massive cannon)", keyPreview: "dreadCannon" },
+    { key: "dreadDrone", label: "Drone Dreadnought (square, dual spawners)", keyPreview: "dreadDrone" }
+  ], "Final Evolution (Level 100)", "Pick your Dreadnought form.", sendPick);
+}
 
 /* ===== Rendering ===== */
 function addDamagePopup(x, y, text, color = "white", duration = 1000) {
-  damagePopups.push({ x, y, text: String(Math.max(1, Math.round(text))), color, created: performance.now(), duration, vy: -0.4 });
+  damagePopups.push({ x, y, text: String(text), color, created: performance.now(), duration, vy: -0.4 });
 }
 
 function drawHealthBar(x, y, hp, maxHp) {
@@ -267,25 +303,48 @@ function drawGrid() {
   for (let gy = 0; gy <= mapHeight; gy += 200) { ctx.beginPath(); ctx.moveTo(0 - camera.x, gy - camera.y); ctx.lineTo(mapWidth - camera.x, gy - camera.y); ctx.stroke(); }
 }
 
+function drawPlayerBody(p) {
+  if (p.isDreadnought && p.dreadType === "cannon") {
+    // hexagon body
+    ctx.strokeStyle = "#66ffff"; ctx.lineWidth = 3; ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      const px = Math.cos(ang) * p.r, py = Math.sin(ang) * p.r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.stroke();
+    // massive cannon
+    ctx.fillStyle = "white"; ctx.fillRect(p.r - 10, -8, p.r * 0.9, 16);
+  } else if (p.isDreadnought && p.dreadType === "drone") {
+    // square body + two visible cannons
+    ctx.fillStyle = "#66ff66"; ctx.fillRect(-p.r, -p.r, p.r * 2, p.r * 2);
+    ctx.fillStyle = "#ffcc66"; ctx.fillRect(p.r - 10, -6, p.r * 0.5, 12);
+    ctx.fillStyle = "#ffcc66"; ctx.fillRect(-p.r - p.r * 0.5 + 10, -6, p.r * 0.5, 12);
+  } else {
+    // default circle tank
+    ctx.fillStyle = "cyan";
+    ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill();
+    if (p.mainGunEnabled) {
+      const spread = p.precisionBattery ? 0.12 : 0.2;
+      const startAngle = -(spread * (p.barrels - 1) / 2);
+      for (let i = 0; i < p.barrels; i++) {
+        const offset = startAngle + i * spread;
+        ctx.save(); ctx.rotate(offset);
+        ctx.fillStyle = "white"; ctx.fillRect(p.r, -5, 15, 10);
+        ctx.restore();
+      }
+      if (p.sideSponsons) {
+        ctx.save(); ctx.rotate(Math.PI/2); ctx.fillStyle="#ddd"; ctx.fillRect(p.r, -5, 15, 10); ctx.restore();
+        ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillStyle="#ddd"; ctx.fillRect(p.r, -5, 15, 10); ctx.restore();
+      }
+    }
+  }
+}
+
 function drawPlayer(p, isMe=false) {
   if (!p) return;
   ctx.save(); ctx.translate(p.x - camera.x, p.y - camera.y); ctx.rotate(p.angle);
-  ctx.fillStyle = isMe ? "#66ffff" : "cyan";
-  ctx.beginPath(); ctx.arc(0, 0, p.r, 0, Math.PI * 2); ctx.fill();
-  if (p.mainGunEnabled) {
-    const spread = p.precisionBattery ? 0.12 : 0.2;
-    const startAngle = -(spread * (p.barrels - 1) / 2);
-    for (let i = 0; i < p.barrels; i++) {
-      const offset = startAngle + i * spread;
-      ctx.save(); ctx.rotate(offset);
-      ctx.fillStyle = "white"; ctx.fillRect(p.r, -5, 15, 10);
-      ctx.restore();
-    }
-    if (p.sideSponsons) {
-      ctx.save(); ctx.rotate(Math.PI/2); ctx.fillStyle="#ddd"; ctx.fillRect(p.r, -5, 15, 10); ctx.restore();
-      ctx.save(); ctx.rotate(-Math.PI/2); ctx.fillStyle="#ddd"; ctx.fillRect(p.r, -5, 15, 10); ctx.restore();
-    }
-  }
+  drawPlayerBody(p);
   ctx.restore();
   drawHealthBar(p.x, p.y, p.hp, p.maxHp);
 }
@@ -364,11 +423,7 @@ function drawSuperBoss(sb) {
 
 function drawBullets(players, boss, superBoss) {
   ctx.fillStyle = "yellow";
-  for (const p of players) {
-    for (const b of p.bullets) {
-      ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill();
-    }
-  }
+  for (const p of players) for (const b of p.bullets) { ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill(); }
   ctx.fillStyle = "red";
   if (boss) for (const b of boss.bullets) { ctx.beginPath(); ctx.arc(b.x - camera.x, b.y - camera.y, b.r, 0, Math.PI * 2); ctx.fill(); }
   ctx.fillStyle = "#ff66ff";
@@ -377,7 +432,7 @@ function drawBullets(players, boss, superBoss) {
 
 function drawDrones(players, superBoss) {
   for (const p of players) {
-    if (p.path === "drone") {
+    if (p.path === "drone" || (p.isDreadnought && p.dreadType === "drone")) {
       ctx.fillStyle = p.droneGuardian ? "#88f" : "yellow";
       for (const d of p.drones) { ctx.beginPath(); ctx.arc(d.x - camera.x, d.y - camera.y, d.r, 0, Math.PI * 2); ctx.fill(); }
     }
@@ -395,8 +450,7 @@ function drawTraps(players) {
       ctx.beginPath(); ctx.arc(0, 0, t.r, 0, Math.PI * 2); ctx.fill();
       if (t.sentry) { ctx.fillStyle = "white"; ctx.fillRect(-2, -t.r, 4, 10); }
       ctx.restore();
-      const maxHP = t.hp >= 500 ? 500 : (t.hp >= 120 ? 120 : 60);
-      drawHealthBar(t.x, t.y, t.hp, maxHP);
+      drawHealthBar(t.x, t.y, t.hp, t.maxHp ?? t.hp);
     }
   }
 }
@@ -426,7 +480,7 @@ function drawUI(me) {
   const lvl = me ? me.level : 1;
   ctx.fillText(`HP: ${Math.floor(hp)}`, 10, 20);
   ctx.fillText(`XP: ${Math.floor(xp)}`, 10, 40);
-  ctx.fillText(`Level: ${lvl} / 12`, 10, 60);
+  ctx.fillText(`Level: ${lvl} / 100`, 10, 60);
   if (me && me.trapLayer) {
     const now = performance.now();
     const cd = Math.max(0, (me.nextTrapTime ?? now) - now);
@@ -548,7 +602,7 @@ socket.on("state", s => {
     for (const p of s.damagePopups) addDamagePopup(p.x, p.y, p.text, p.color, p.duration);
   }
 
-  // Prompt handling: show path or upgrade menus based on server signal
+  // Prompt handling: path, sub-upgrades, final dreadnought
   const me = s.players.find(p => p.id === myId);
 
   if (s.prompt && s.prompt.type === "path" && me && !selectionActive) {
@@ -556,6 +610,8 @@ socket.on("state", s => {
   } else if (s.prompt && s.prompt.type === "subUpgrade" && me && !selectionActive) {
     const path = me?.path || null;
     chooseSubUpgrade(s.prompt.level, path);
+  } else if (s.prompt && s.prompt.type === "finalDread" && me && !selectionActive) {
+    chooseFinalDread();
   }
 
   // Game over popup
