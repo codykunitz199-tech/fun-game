@@ -40,8 +40,9 @@ const world = {
 
 /* ===== Utilities ===== */
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-function addDamagePopup(x, y, amount, color = "white", duration = 1000) {
-  world.damagePopups.push({ x, y, text: `${Math.max(1, Math.round(amount))}`, color, duration });
+function addDamagePopup(x, y, amountOrText, color = "white", duration = 1000) {
+  const text = typeof amountOrText === "number" ? `${Math.max(1, Math.round(amountOrText))}` : String(amountOrText);
+  world.damagePopups.push({ x, y, text, color, duration });
 }
 function randInRange(min, max) { return min + Math.random() * (max - min); }
 
@@ -87,11 +88,12 @@ function makeDefaultPlayer(id) {
 
     // Drone dread spawners + cap
     dreadDroneSpawnerA: 0, dreadDroneSpawnerB: 0,
-    dreadDroneCap: 50, // HARD CAP set to 50 per your request
+    dreadDroneCap: 50,
 
     _prompt: null,
 
-    input: { keys: { w: false, a: false, s: false, d: false }, mouse: { x: 0, y: 0 }, camera: { x: 0, y: 0 } }
+    // Input: server expects mouse in world coordinates; camera ignored here
+    input: { keys: { w: false, a: false, s: false, d: false }, mouse: { x: 0, y: 0 } }
   };
 }
 
@@ -156,7 +158,7 @@ function spawnShape() {
   });
 }
 
-/* ===== Targeting helpers (kept for bosses/traps only) ===== */
+/* ===== Targeting helpers ===== */
 function getClosestTarget(x, y, excludeOwnerId = null) {
   const candidates = [];
   for (const p of world.players.values()) {
@@ -380,7 +382,9 @@ function spawnFragments(owner, x, y, baseDmg) {
 /* ===== Movement & AI ===== */
 function updatePlayerInputs(player) {
   if (player.dead) return;
-  const { keys, mouse, camera } = player.input;
+  const { keys, mouse } = player.input;
+
+  // WASD movement
   if (keys.w) player.y -= player.speed;
   if (keys.s) player.y += player.speed;
   if (keys.a) player.x -= player.speed;
@@ -388,9 +392,9 @@ function updatePlayerInputs(player) {
   player.x = clamp(player.x, player.r, mapWidth - player.r);
   player.y = clamp(player.y, player.r, mapHeight - player.r);
 
-  // Aim follows mouse + camera offset
-  const dxAim = mouse.x + (camera?.x || 0) - player.x;
-  const dyAim = mouse.y + (camera?.y || 0) - player.y;
+  // Aim: server uses mouse in world coordinates (NO camera added here)
+  const dxAim = mouse.x - player.x;
+  const dyAim = mouse.y - player.y;
   player.angle = Math.atan2(dyAim, dxAim);
 }
 
@@ -474,24 +478,28 @@ function updateShapes() {
   }
 }
 
+/* ===== Boss respawn cooldown ===== */
+let bossRespawnTimer = null;
+function scheduleBossRespawn() {
+  if (bossRespawnTimer) return;
+  bossRespawnTimer = setTimeout(() => {
+    world.boss.hp = world.boss.maxHp;
+    world.boss.x = randInRange(world.boss.r, mapWidth - world.boss.r);
+    world.boss.y = randInRange(world.boss.r, mapHeight - world.boss.r);
+    world.boss.bullets = [];
+    addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Respawn", "#ffffff");
+    bossRespawnTimer = null;
+  }, 60000);
+}
+
 /* ===== Collisions & bullets ===== */
 function awardBossKill(xpAward, killerId) {
   const killer = world.players.get(killerId);
   if (killer) killer.xp += xpAward;
-  // 60-second respawn (cooldown)
+  addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Boss Defeated", "#ffffff");
   world.boss.hp = 0;
   world.boss.bullets = [];
-  addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Boss Defeated", "#ffffff");
-  if (!world._bossRespawnTimer) {
-    world._bossRespawnTimer = setTimeout(() => {
-      world.boss.hp = world.boss.maxHp;
-      world.boss.x = randInRange(world.boss.r, mapWidth - world.boss.r);
-      world.boss.y = randInRange(world.boss.r, mapHeight - world.boss.r);
-      world.boss.bullets = [];
-      addDamagePopup(world.boss.x, world.boss.y - world.boss.r - 12, "Respawn", "#ffffff");
-      world._bossRespawnTimer = null;
-    }, 60000);
-  }
+  scheduleBossRespawn();
 }
 
 function updatePlayerBullets() {
@@ -518,7 +526,7 @@ function updatePlayerBullets() {
 
       const IMMUNITY_MS = 500;
 
-      // SuperBoss hit
+      // SuperBoss
       if (world.superBoss.hp > 0) {
         const entityIdSB = world.superBoss.id;
         const immuneUntilSB = b.hitCooldown[entityIdSB] ?? 0;
@@ -536,7 +544,7 @@ function updatePlayerBullets() {
         }
       }
 
-      // Boss hit
+      // Boss
       if (world.boss.hp > 0) {
         const entityIdB = world.boss.id;
         const immuneUntilB = b.hitCooldown[entityIdB] ?? 0;
@@ -686,7 +694,7 @@ function updatePlayerDrones() {
     const isDroneDread = owner.isDreadnought && owner.dreadType === "drone";
     if ((!isDroneClass && !isDroneDread) || owner.dead) continue;
 
-    // Drone Dread spawners: respect CAP=50 and spawn rate (2 each every 0.5s)
+    // Drone Dread spawners: respect cap = 50 and spawn rate
     if (isDroneDread) {
       const now = PERF.now();
       if (owner.drones.length < owner.dreadDroneCap) {
@@ -714,9 +722,9 @@ function updatePlayerDrones() {
       // Despawn after ~30s
       if (d.spawnTime && PERF.now() - d.spawnTime > 30000) { owner.drones.splice(di, 1); continue; }
 
-      // Movement — ONLY follow mouse (ignore targets)
-      const tx = owner.input.mouse.x + (owner.input.camera?.x || 0);
-      const ty = owner.input.mouse.y + (owner.input.camera?.y || 0);
+      // Movement — follow mouse in WORLD coords (no camera added here)
+      const tx = owner.input.mouse.x;
+      const ty = owner.input.mouse.y;
       const dx = tx - d.x, dy = ty - d.y;
       const distToMouse = Math.hypot(dx, dy);
       if (distToMouse > 0.001) { d.x += (dx / distToMouse) * d.speed; d.y += (dy / distToMouse) * d.speed; }
@@ -781,15 +789,15 @@ function updatePlayerDrones() {
         }
       }
 
-      // Shooting — aim at mouse (ignore targets)
+      // Shooting — aim at owner's mouse (world coords)
       const shooterEnabled = owner.droneShooter || owner.hybridDrones || d.superDrone;
       const shooterInterval = d.superDrone ? 3000 : 1800;
       const dmgPerShot = d.superDrone ? 10 : 6;
       if (shooterEnabled) {
         if (!d.nextShootTime) d.nextShootTime = PERF.now() + shooterInterval;
         if (PERF.now() >= d.nextShootTime) {
-          const aimX = owner.input.mouse.x + (owner.input.camera?.x || 0);
-          const aimY = owner.input.mouse.y + (owner.input.camera?.y || 0);
+          const aimX = owner.input.mouse.x;
+          const aimY = owner.input.mouse.y;
           const ang = Math.atan2(aimY - d.y, aimX - d.x);
           owner.bullets.push({
             x: d.x, y: d.y,
@@ -1039,7 +1047,7 @@ function superBossSpawnDrone() {
   }
 }
 
-function firePlayerGunsTick(player) {
+function playerFireTick(player) {
   const t = PERF.now();
   if (!player.dead && player.mainGunEnabled && t >= player.nextFireTime) {
     firePlayerGuns(player);
@@ -1068,7 +1076,7 @@ function droneRespawnTick() {
   }
 }
 
-/* ===== Snapshot ===== */
+/* ===== Crown assignment (top XP) ===== */
 function updateCrowns() {
   let best = null;
   for (const p of world.players.values()) {
@@ -1079,6 +1087,8 @@ function updateCrowns() {
     p.hasCrown = (best && p.id === best.id);
   }
 }
+
+/* ===== Snapshot ===== */
 function buildSnapshotForClient(forPlayerId) {
   updateCrowns();
   return {
@@ -1110,7 +1120,7 @@ function buildSnapshotForClient(forPlayerId) {
 function tick() {
   for (const p of world.players.values()) {
     updatePlayerInputs(p);
-    firePlayerGunsTick(p);
+    playerFireTick(p);
     checkLevelMilestones(p);
 
     // Cannon dread regen: 10 hp/sec
@@ -1137,7 +1147,7 @@ function tick() {
 }
 
 /* ===== Spawners & tick timers ===== */
-setInterval(() => { if (world.shapes.length < 180) spawnShape(); }, 250); // faster shapes, kept from your build
+setInterval(() => { if (world.shapes.length < 180) spawnShape(); }, 250);
 setInterval(bossFire, 1000);
 setInterval(superBossFireBottom, 2500);
 setInterval(superBossFireMiddle, 1000);
@@ -1156,7 +1166,8 @@ io.on("connection", socket => {
   socket.on("input", payload => {
     const p = world.players.get(socket.id);
     if (!p) return;
-    if (!payload || !payload.keys || !payload.mouse || !payload.camera) return;
+    if (!payload || !payload.keys || !payload.mouse) return;
+    // Server expects payload.mouse in WORLD coordinates; do not add camera here
     p.input = payload;
   });
 
@@ -1251,7 +1262,7 @@ io.on("connection", socket => {
       p.mainGunEnabled = false;
       p.dreadDroneSpawnerA = PERF.now();
       p.dreadDroneSpawnerB = PERF.now();
-      p.dreadDroneCap = 50; // enforce cap
+      p.dreadDroneCap = 50;
     }
   });
 
