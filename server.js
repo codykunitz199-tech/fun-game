@@ -1,4 +1,4 @@
-// server.js
+// ===== server.js =====
 // Install: npm init -y && npm install express socket.io
 // Run: node server.js
 
@@ -35,6 +35,8 @@ const world = {
     speed: 0.8,
     bullets: [], drones: []
   },
+  // Omega Boss holder (spawns when SuperBoss dies)
+  omegaBoss: null,
   damagePopups: []
 };
 
@@ -171,6 +173,8 @@ function getClosestTarget(x, y, excludeOwnerId = null) {
     }
   }
   if (world.boss.hp > 0) candidates.push({ x: world.boss.x, y: world.boss.y, type: "boss", ref: world.boss });
+  if (world.superBoss.hp > 0) candidates.push({ x: world.superBoss.x, y: world.superBoss.y, type: "superBoss", ref: world.superBoss });
+  if (world.omegaBoss && world.omegaBoss.hp > 0) candidates.push({ x: world.omegaBoss.x, y: world.omegaBoss.y, type: "omegaBoss", ref: world.omegaBoss });
 
   if (world.shapes.length) {
     let nearest = null; let minD = Infinity;
@@ -193,6 +197,8 @@ function getClosestTarget(x, y, excludeOwnerId = null) {
 function resolveTarget(type, ref) {
   if (type === "player") return (ref && !ref.dead) ? ref : null;
   if (type === "boss") return world.boss.hp > 0 ? world.boss : null;
+  if (type === "superBoss") return world.superBoss.hp > 0 ? world.superBoss : null;
+  if (type === "omegaBoss") return (world.omegaBoss && world.omegaBoss.hp > 0) ? world.omegaBoss : null;
   if (type === "shape") return world.shapes.includes(ref) ? ref : null;
   if (type === "drone") {
     const owner = ref?.owner;
@@ -449,6 +455,10 @@ function superBossAI() {
         if (target.hp <= 0) target.dead = true;
       } else if (d.targetType === "boss") {
         world.boss.hp = Math.max(0, world.boss.hp - d.dmg);
+      } else if (d.targetType === "superBoss") {
+        world.superBoss.hp = Math.max(0, world.superBoss.hp - d.dmg);
+      } else if (d.targetType === "omegaBoss") {
+        if (world.omegaBoss) world.omegaBoss.hp = Math.max(0, world.omegaBoss.hp - d.dmg);
       } else if (d.targetType === "shape") {
         target.hp -= d.dmg;
         addDamagePopup(target.x, target.y - target.r - 12, d.dmg, "#ff66ff");
@@ -466,6 +476,128 @@ function superBossAI() {
       }
       world.superBoss.drones.splice(i, 1);
     }
+  }
+}
+
+/* ===== Omega Boss (spawned on SuperBoss death) ===== */
+function spawnOmegaBoss() {
+  world.omegaBoss = {
+    id: "omegaBoss",
+    x: mapWidth / 2, y: mapHeight / 2,
+    hp: 30000, maxHp: 30000,
+    speed: 2.5,
+    baseRadius: 200, // visual reference
+
+    angleBottom: 0, angleSecond: 0, angleThird: 0, angleTop: 0,
+    rotBottom: 0.40, rotSecond: -0.35, rotThird: 0.30, rotTop: -0.25,
+
+    bullets: [],
+    traps: [],
+    drones: [],
+
+    nextFireBottom: PERF.now(),
+    nextTrapSpawn: PERF.now(),
+    nextDroneSpawn: PERF.now(),
+    nextSniper: PERF.now()
+  };
+  addDamagePopup(world.omegaBoss.x, world.omegaBoss.y - world.omegaBoss.baseRadius - 12, "Omega Boss Emerges!", "#ff66ff");
+}
+
+function omegaBossAI() {
+  const ob = world.omegaBoss;
+  if (!ob || ob.hp <= 0) return;
+
+  // Move toward nearest
+  const tgt = getClosestTarget(ob.x, ob.y);
+  if (tgt) {
+    const dx = tgt.x - ob.x, dy = tgt.y - ob.y, dist = Math.hypot(dx, dy);
+    if (dist > 1) {
+      ob.x = clamp(ob.x + (dx / dist) * ob.speed, ob.baseRadius, mapWidth - ob.baseRadius);
+      ob.y = clamp(ob.y + (dy / dist) * ob.speed, ob.baseRadius, mapHeight - ob.baseRadius);
+    }
+  }
+
+  // Rotate rings
+  ob.angleBottom += ob.rotBottom;
+  ob.angleSecond += ob.rotSecond;
+  ob.angleThird += ob.rotThird;
+  ob.angleTop += ob.rotTop;
+
+  const now = PERF.now();
+
+  // Bottom cannons: 60 bullets each 600ms, dmg 20
+  if (now >= ob.nextFireBottom) {
+    ob.nextFireBottom = now + 600;
+    for (let i = 0; i < 60; i++) {
+      const a = ob.angleBottom + i * (2 * Math.PI / 60);
+      const sx = ob.x + Math.cos(a) * ob.baseRadius;
+      const sy = ob.y + Math.sin(a) * ob.baseRadius;
+      ob.bullets.push({ x: sx, y: sy, dx: Math.cos(a) * 12, dy: Math.sin(a) * 12, r: 6, dmg: 20, spawnTime: now, lifeTime: 2000 });
+    }
+  }
+
+  // Traps: spawn 6 every 5s, live 10s, fire every 2s, dmg 40
+  if (now >= ob.nextTrapSpawn) {
+    ob.nextTrapSpawn = now + 5000;
+    for (let i = 0; i < 6; i++) {
+      const a = ob.angleSecond + i * (2 * Math.PI / 6);
+      const tx = ob.x + Math.cos(a) * (ob.baseRadius * 0.9);
+      const ty = ob.y + Math.sin(a) * (ob.baseRadius * 0.9);
+      ob.traps.push({ x: tx, y: ty, r: 20, dmg: 40, hp: 700, maxHp: 700, spawnTime: now, lifeTime: 10000, nextSentryShot: now + 2000 });
+    }
+  }
+  for (let i = ob.traps.length - 1; i >= 0; i--) {
+    const t = ob.traps[i];
+    if (now - t.spawnTime > t.lifeTime || t.hp <= 0) { ob.traps.splice(i, 1); continue; }
+    if (now >= t.nextSentryShot) {
+      t.nextSentryShot = now + 2000;
+      const target = getClosestTarget(t.x, t.y);
+      if (target) {
+        const ang = Math.atan2(target.y - t.y, target.x - t.x);
+        ob.bullets.push({ x: t.x, y: t.y, dx: Math.cos(ang) * 10, dy: Math.sin(ang) * 10, r: 5, dmg: t.dmg, spawnTime: now, lifeTime: 2000 });
+      }
+    }
+  }
+
+  // Drones: spawn 3 every 10s, live 20s, fire every 3s, dmg 50 (double-shot)
+  if (now >= ob.nextDroneSpawn) {
+    ob.nextDroneSpawn = now + 10000;
+    for (let i = 0; i < 3; i++) {
+      const a = ob.angleThird + i * (2 * Math.PI / 3);
+      const dx = ob.x + Math.cos(a) * (ob.baseRadius * 0.8);
+      const dy = ob.y + Math.sin(a) * (ob.baseRadius * 0.8);
+      ob.drones.push({ x: dx, y: dy, r: 24, hp: 300, maxHp: 300, spawnTime: now, lifeTime: 20000, nextShootTime: now + 3000 });
+    }
+  }
+  for (let i = ob.drones.length - 1; i >= 0; i--) {
+    const d = ob.drones[i];
+    if (now - d.spawnTime > d.lifeTime || d.hp <= 0) { ob.drones.splice(i, 1); continue; }
+    if (now >= d.nextShootTime) {
+      d.nextShootTime = now + 3000;
+      const target = getClosestTarget(d.x, d.y);
+      if (target) {
+        const ang = Math.atan2(target.y - d.y, target.x - d.x);
+        ob.bullets.push({ x: d.x, y: d.y, dx: Math.cos(ang) * 11, dy: Math.sin(ang) * 11, r: 6, dmg: 50, spawnTime: now, lifeTime: 2000 });
+        ob.bullets.push({ x: d.x, y: d.y, dx: Math.cos(ang) * 11, dy: Math.sin(ang) * 11, r: 6, dmg: 50, spawnTime: now, lifeTime: 2000 });
+      }
+    }
+  }
+
+  // Sniper: every 5s at highest XP player, dmg 300
+  if (now >= ob.nextSniper) {
+    ob.nextSniper = now + 5000;
+    let best = null;
+    for (const p of world.players.values()) { if (!p.dead && (!best || p.xp > best.xp)) best = p; }
+    if (best) {
+      const ang = Math.atan2(best.y - ob.y, best.x - ob.x);
+      ob.bullets.push({ x: ob.x, y: ob.y, dx: Math.cos(ang) * 20, dy: Math.sin(ang) * 20, r: 12, dmg: 300, spawnTime: now, lifeTime: 2000 });
+    }
+  }
+
+  // Death cleanup
+  if (ob.hp <= 0) {
+    addDamagePopup(ob.x, ob.y - ob.baseRadius - 12, "Omega Boss Defeated!", "#ffffff");
+    world.omegaBoss = null;
   }
 }
 
@@ -539,6 +671,29 @@ function updatePlayerBullets() {
             if (player.clusterBomb) spawnFragments(player, b.x, b.y, b.dmg);
             b.hitCooldown[entityIdSB] = PERF.now() + IMMUNITY_MS;
             if (b.pierce > 0) b.pierce--; else player.bullets.splice(i, 1);
+
+            // Spawn Omega Boss when SuperBoss dies
+            if (world.superBoss.hp <= 0 && !world.omegaBoss) {
+              spawnOmegaBoss();
+            }
+            continue;
+          }
+        }
+      }
+
+      // OmegaBoss
+      if (world.omegaBoss && world.omegaBoss.hp > 0) {
+        const entityIdOB = world.omegaBoss.id;
+        const immuneUntilOB = b.hitCooldown[entityIdOB] ?? 0;
+        if (PERF.now() >= immuneUntilOB) {
+          const d = Math.hypot(world.omegaBoss.x - b.x, world.omegaBoss.y - b.y);
+          if (d < world.omegaBoss.baseRadius + b.r) {
+            world.omegaBoss.hp = Math.max(0, world.omegaBoss.hp - b.dmg);
+            addDamagePopup(world.omegaBoss.x, world.omegaBoss.y - world.omegaBoss.baseRadius - 12, b.dmg, "#ffffff");
+            tryExplodeSplash();
+            if (player.clusterBomb) spawnFragments(player, b.x, b.y, b.dmg);
+            b.hitCooldown[entityIdOB] = PERF.now() + IMMUNITY_MS;
+            if (b.pierce > 0) b.pierce--; else player.bullets.splice(i, 1);
             continue;
           }
         }
@@ -610,21 +765,23 @@ function updatePlayerBullets() {
 }
 
 function updateEnemyBullets() {
-  for (const set of [world.boss.bullets, world.superBoss.bullets]) {
+  for (const set of [world.boss.bullets, world.superBoss.bullets, world.omegaBoss ? world.omegaBoss.bullets : []]) {
     for (let i = set.length - 1; i >= 0; i--) {
       const b = set[i];
       if (PERF.now() - b.spawnTime > b.lifeTime) { set.splice(i, 1); continue; }
       b.x += b.dx; b.y += b.dy;
       if (b.x < 0 || b.y < 0 || b.x > mapWidth || b.y > mapHeight) { set.splice(i, 1); continue; }
 
+      // Players
       for (const player of world.players.values()) {
         if (player.dead) continue;
         const distP = Math.hypot(player.x - b.x, player.y - b.y);
         if (distP < player.r + b.r) { player.hp = Math.max(0, player.hp - b.dmg); set.splice(i, 1); if (player.hp <= 0) player.dead = true; break; }
       }
 
-      if (set === world.superBoss.bullets) {
-        let hit = false;
+      // SuperBoss bullets also hit shapes, boss, drones; Omega shares same behavior
+      let hit = false;
+      if (set === world.superBoss.bullets || (world.omegaBoss && set === world.omegaBoss.bullets)) {
         for (let si = world.shapes.length - 1; si >= 0; si--) {
           const s = world.shapes[si];
           const distS = Math.hypot(s.x - b.x, s.y - b.y);
@@ -646,6 +803,7 @@ function updateEnemyBullets() {
           }
         }
 
+        // Drones of players
         for (const owner of world.players.values()) {
           for (let di = owner.drones.length - 1; di >= 0; di--) {
             const d = owner.drones[di];
@@ -653,6 +811,8 @@ function updateEnemyBullets() {
             if (distD < d.r + b.r) { owner.drones.splice(di, 1); set.splice(i, 1); break; }
           }
         }
+
+        // Also damage OmegaBoss with enemy bullets from Omega? Not needed; Omega bullets are its own set.
       }
     }
   }
@@ -775,6 +935,18 @@ function updatePlayerDrones() {
         }
       }
 
+      // Contact with omegaBoss
+      if (world.omegaBoss && world.omegaBoss.hp > 0) {
+        const distOB = Math.hypot(world.omegaBoss.x - d.x, world.omegaBoss.y - d.y);
+        if (distOB < world.omegaBoss.baseRadius + d.r) {
+          const dmg = d.superDrone ? d.contactDamage : (owner.droneKamikazeBoost ? Math.round(owner.droneDamage * 1.5) : owner.droneDamage);
+          world.omegaBoss.hp = Math.max(0, world.omegaBoss.hp - dmg);
+          addDamagePopup(world.omegaBoss.x, world.omegaBoss.y - world.omegaBoss.baseRadius - 12, dmg, "yellow");
+          removeDroneOnHit(owner, di);
+          continue;
+        }
+      }
+
       // Contact with other players
       for (const other of world.players.values()) {
         if (other.dead || other.id === owner.id) continue;
@@ -812,7 +984,7 @@ function updatePlayerDrones() {
     }
 
     // Guardian: slow enemy bullets on contact
-    const enemySets = [world.boss.bullets, world.superBoss.bullets];
+    const enemySets = [world.boss.bullets, world.superBoss.bullets, world.omegaBoss ? world.omegaBoss.bullets : []];
     if (owner.droneGuardian) {
       for (const d of owner.drones) {
         for (const set of enemySets) {
@@ -857,7 +1029,7 @@ function updateTraps() {
       }
 
       // Enemy bullets vs traps
-      for (const set of [world.boss.bullets, world.superBoss.bullets]) {
+      for (const set of [world.boss.bullets, world.superBoss.bullets, world.omegaBoss ? world.omegaBoss.bullets : []]) {
         for (let bi = set.length - 1; bi >= 0; bi--) {
           const b = set[bi];
           const dist = Math.hypot(t.x - b.x, t.y - b.y);
@@ -888,6 +1060,7 @@ function updateTraps() {
       }
       if (!owner.traps[ti]) continue;
 
+      // Boss
       if (world.boss.hp > 0) {
         const distB = Math.hypot(t.x - world.boss.x, t.y - world.boss.y);
         if (distB < t.r + world.boss.r) {
@@ -900,6 +1073,7 @@ function updateTraps() {
         }
       }
 
+      // SuperBoss
       if (world.superBoss.hp > 0) {
         const distSB = Math.hypot(t.x - world.superBoss.x, t.y - world.superBoss.y);
         if (distSB < t.r + world.superBoss.rBottom) {
@@ -911,6 +1085,19 @@ function updateTraps() {
         }
       }
 
+      // OmegaBoss
+      if (world.omegaBoss && world.omegaBoss.hp > 0) {
+        const distOB = Math.hypot(t.x - world.omegaBoss.x, t.y - world.omegaBoss.y);
+        if (distOB < t.r + world.omegaBoss.baseRadius) {
+          world.omegaBoss.hp = Math.max(0, world.omegaBoss.hp - t.dmg);
+          addDamagePopup(world.omegaBoss.x, world.omegaBoss.y - world.omegaBoss.baseRadius - 12, t.dmg, "#66ff66");
+          if (t.cluster) trapClusterExplode(owner, t);
+          owner.traps.splice(ti, 1);
+          continue;
+        }
+      }
+
+      // Other players
       for (const other of world.players.values()) {
         if (other.dead || other.id === owner.id) continue;
         const distO = Math.hypot(t.x - other.x, t.y - other.y);
@@ -939,6 +1126,7 @@ function resolveEntityCollisions() {
   }
   if (world.boss.hp > 0) entities.push({ ref: world.boss, type: "boss", ownerId: null, x: world.boss.x, y: world.boss.y, r: world.boss.r, mass: 3.0, movable: true });
   if (world.superBoss.hp > 0) entities.push({ ref: world.superBoss, type: "superBoss", ownerId: null, x: world.superBoss.x, y: world.superBoss.y, r: world.superBoss.rBottom, mass: 5.0, movable: true });
+  if (world.omegaBoss && world.omegaBoss.hp > 0) entities.push({ ref: world.omegaBoss, type: "omegaBoss", ownerId: null, x: world.omegaBoss.x, y: world.omegaBoss.y, r: world.omegaBoss.baseRadius, mass: 7.0, movable: true });
   for (const s of world.shapes) entities.push({ ref: s, type: "shape", ownerId: null, x: s.x, y: s.y, r: s.r, mass: 0.8, movable: true });
 
   for (let i = 0; i < entities.length; i++) {
@@ -1049,10 +1237,10 @@ function superBossSpawnDrone() {
 
 function playerFireTick(player) {
   const t = PERF.now();
+  const dreadDelay = (player.isDreadnought && player.dreadType === "cannon") ? 600 : player.fireDelay;
   if (!player.dead && player.mainGunEnabled && t >= player.nextFireTime) {
     firePlayerGuns(player);
     const altActive = player.alternatingFire && !player.wallOfLead;
-    const dreadDelay = (player.isDreadnought && player.dreadType === "cannon") ? 600 : player.fireDelay;
     player.nextFireTime = t + (altActive ? 100 : dreadDelay);
   }
 }
@@ -1109,6 +1297,19 @@ function buildSnapshotForClient(forPlayerId) {
     })),
     boss: world.boss,
     superBoss: world.superBoss,
+    omegaBoss: world.omegaBoss ? {
+      id: world.omegaBoss.id,
+      x: world.omegaBoss.x, y: world.omegaBoss.y,
+      hp: world.omegaBoss.hp, maxHp: world.omegaBoss.maxHp,
+      baseRadius: world.omegaBoss.baseRadius,
+      angleBottom: world.omegaBoss.angleBottom,
+      angleSecond: world.omegaBoss.angleSecond,
+      angleThird: world.omegaBoss.angleThird,
+      angleTop: world.omegaBoss.angleTop,
+      bullets: world.omegaBoss.bullets,
+      traps: world.omegaBoss.traps,
+      drones: world.omegaBoss.drones
+    } : null,
     shapes: world.shapes,
     damagePopups: world.damagePopups.splice(0),
     prompt: world.players.get(forPlayerId)?._prompt || null,
@@ -1131,6 +1332,13 @@ function tick() {
   }
   bossAI();
   superBossAI();
+
+  // SuperBoss death → Omega spawn (in case not triggered via bullet damage path)
+  if (world.superBoss.hp <= 0 && !world.omegaBoss) {
+    spawnOmegaBoss();
+  }
+
+  omegaBossAI();
   updateShapes();
   updatePlayerBullets();
   updateEnemyBullets();
