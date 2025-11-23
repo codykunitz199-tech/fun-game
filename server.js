@@ -35,7 +35,6 @@ const world = {
     speed: 0.8,
     bullets: [], drones: []
   },
-  // Omega Boss added here
   omegaBoss: {
     id: "omegaBoss",
     x: 0, y: 0,
@@ -499,8 +498,7 @@ function spawnOmegaBoss() {
   const dreadRadius = 80;
   const dreadFullWidth = dreadRadius * 2; // 160
 
-  // Bottom layer: "massive bottom layer 2x the size of a dreadnought’s full width"
-  // To achieve imposing scale visually, set ring radius to 2x full width
+  // Bottom layer: massive — set ring radius to 2x full width
   world.omegaBoss.rBottom = dreadFullWidth * 2; // 320
   world.omegaBoss.rLayer2 = Math.round(world.omegaBoss.rBottom * 0.9);
   world.omegaBoss.rLayer3 = Math.round(world.omegaBoss.rBottom * 0.8);
@@ -704,7 +702,7 @@ function updatePlayerBullets() {
     }
   }
 
-  // Omega Boss collisions (added)
+  // Omega Boss collisions
   for (const player of world.players.values()) {
     for (let i = player.bullets.length - 1; i >= 0; i--) {
       const b = player.bullets[i];
@@ -742,6 +740,7 @@ function updateEnemyBullets() {
       b.x += b.dx; b.y += b.dy;
       if (b.x < 0 || b.y < 0 || b.x > mapWidth || b.y > mapHeight) { set.splice(i, 1); continue; }
 
+      // Players
       for (const player of world.players.values()) {
         if (player.dead) continue;
         const distP = Math.hypot(player.x - b.x, player.y - b.y);
@@ -840,7 +839,7 @@ function updatePlayerDrones() {
       // Despawn after ~30s
       if (d.spawnTime && PERF.now() - d.spawnTime > 30000) { owner.drones.splice(di, 1); continue; }
 
-      // Movement — follow mouse in WORLD coords (no camera added here)
+      // Movement — follow mouse in WORLD coords
       const tx = owner.input.mouse.x;
       const ty = owner.input.mouse.y;
       const dx = tx - d.x, dy = ty - d.y;
@@ -1045,50 +1044,65 @@ function updateTraps() {
   }
 }
 
-function resolveEntityCollisions() {
-  const entities = [];
+/* ===== Omega drones AI ===== */
+function updateOmegaDrones() {
+  const b = world.omegaBoss;
+  if (!b.alive) return;
+  for (let i = b.drones.length - 1; i >= 0; i--) {
+    const d = b.drones[i];
+    // Lifetime
+    if (PERF.now() - d.spawnTime > d.lifeMs) { b.drones.splice(i, 1); continue; }
 
-  for (const p of world.players.values()) {
-    if (p.dead) continue;
-    entities.push({ ref: p, type: "player", ownerId: p.id, x: p.x, y: p.y, r: p.r, mass: 1.0, movable: true });
+    // Lock/retarget
+    let target = resolveTarget(d.targetType, d.targetRef);
+    if (!target || PERF.now() > d.lockUntil) {
+      const nt = getClosestTarget(d.x, d.y);
+      if (nt && nt.type !== "boss" && nt.type !== "superBoss") {
+        d.targetType = nt.type; d.targetRef = nt.ref; d.lockUntil = PERF.now() + 10000;
+      } else { d.targetType = null; d.targetRef = null; }
+      target = resolveTarget(d.targetType, d.targetRef);
+    }
 
-    for (const d of p.drones) entities.push({ ref: d, type: "playerDrone", ownerId: p.id, x: d.x, y: d.y, r: d.r, mass: 0.3, movable: true });
-    for (const t of p.traps) entities.push({ ref: t, type: "playerTrap", ownerId: p.id, x: t.x, y: t.y, r: t.r, mass: 0.6, movable: true });
+    // Orbit and shoot
+    if (target) {
+      d.orbitAngle += (2 * Math.PI / 8) * (1 / 30); // ~8s per orbit @30Hz
+      const ox = target.x + Math.cos(d.orbitAngle) * d.orbitRadius;
+      const oy = target.y + Math.sin(d.orbitAngle) * d.orbitRadius;
+      const vx = ox - d.x, vy = oy - d.y;
+      d.x += vx * 0.12;
+      d.y += vy * 0.12;
+
+      const now = PERF.now();
+      if (now >= d.nextShootTime) {
+        d.nextShootTime = now + 3000;
+        const ang = Math.atan2(target.y - d.y, target.x - d.x);
+        d.cannonFacing = ang;
+        const dmg = Math.floor(d.droneDmgBase * b.currentDamageFactor);
+        // Twin shots
+        b.bullets.push({ x: d.x, y: d.y, dx: Math.cos(ang) * 9, dy: Math.sin(ang) * 9, r: d.cannonWide ? d.r : 12, dmg, spawnTime: now, lifeTime: 2400 });
+        b.bullets.push({ x: d.x, y: d.y, dx: Math.cos(ang) * 9, dy: Math.sin(ang) * 9, r: d.cannonWide ? d.r : 12, dmg, spawnTime: now, lifeTime: 2400 });
+      }
+    }
   }
-  if (world.boss.hp > 0) entities.push({ ref: world.boss, type: "boss", ownerId: null, x: world.boss.x, y: world.boss.y, r: world.boss.r, mass: 3.0, movable: true });
-  if (world.superBoss.hp > 0) entities.push({ ref: world.superBoss, type: "superBoss", ownerId: null, x: world.superBoss.x, y: world.superBoss.y, r: world.superBoss.rBottom, mass: 5.0, movable: true });
-  if (world.omegaBoss.alive && world.omegaBoss.hp > 0) entities.push({ ref: world.omegaBoss, type: "omegaBoss", ownerId: null, x: world.omegaBoss.x, y: world.omegaBoss.y, r: world.omegaBoss.rBottom, mass: 8.0, movable: true });
-  for (const s of world.shapes) entities.push({ ref: s, type: "shape", ownerId: null, x: s.x, y: s.y, r: s.r, mass: 0.8, movable: true });
+}
 
-  for (let i = 0; i < entities.length; i++) {
-    for (let j = i + 1; j < entities.length; j++) {
-      const A = entities[i], B = entities[j];
-      const dx = B.ref.x - A.ref.x;
-      const dy = B.ref.y - A.ref.y;
-      const dist = Math.hypot(dx, dy);
-      const minDist = A.r + B.r;
+/* ===== Omega traps AI ===== */
+function updateOmegaTraps() {
+  const b = world.omegaBoss;
+  if (!b.alive) return;
+  for (let i = b.traps.length - 1; i >= 0; i--) {
+    const t = b.traps[i];
+    if (PERF.now() - t.spawnTime > t.lifeMs) { b.traps.splice(i, 1); continue; }
 
-      if (dist > 0 && dist < minDist) {
-        const overlap = minDist - dist;
-        const ux = dx / dist, uy = dy / dist;
-
-        let moveA = (B.mass / (A.mass + B.mass)) * overlap;
-        let moveB = (A.mass / (A.mass + B.mass)) * overlap;
-
-        if (A.type === "player" && (B.type === "playerDrone" || B.type === "playerTrap") && A.ownerId === B.ownerId) {
-          moveA = 0; moveB = overlap;
-        } else if (B.type === "player" && (A.type === "playerDrone" || A.type === "playerTrap") && B.ownerId === A.ownerId) {
-          moveB = 0; moveA = overlap;
-        }
-
-        if (A.movable) {
-          A.ref.x -= ux * moveA; A.ref.y -= uy * moveA;
-          A.ref.x = clamp(A.ref.x, A.r, mapWidth - A.r); A.ref.y = clamp(A.ref.y, A.r, mapHeight - A.r);
-        }
-        if (B.movable) {
-          B.ref.x += ux * moveB; B.ref.y += uy * moveB;
-          B.ref.x = clamp(B.ref.x, B.r, mapWidth - B.r); B.ref.y = clamp(B.ref.y, B.r, mapHeight - B.r);
-        }
+    const nowShot = PERF.now();
+    if (nowShot >= t.nextShot) {
+      t.nextShot = nowShot + 2000;
+      const nt = getClosestTarget(t.x, t.y);
+      if (nt && nt.type !== "boss" && nt.type !== "superBoss") {
+        const ang = Math.atan2(nt.y - t.y, nt.x - t.x);
+        t.cannonFacing = ang;
+        const dmg = Math.floor(t.gunDmgBase * b.currentDamageFactor);
+        b.bullets.push({ x: t.x, y: t.y, dx: Math.cos(ang) * 9, dy: Math.sin(ang) * 9, r: 10, dmg, spawnTime: PERF.now(), lifeTime: 2400 });
       }
     }
   }
@@ -1166,7 +1180,7 @@ function superBossSpawnDrone() {
   }
 }
 
-// Omega firing/spawners
+/* ===== Omega firing/spawners ===== */
 setInterval(() => {
   const b = world.omegaBoss;
   if (!b.alive || b.hp <= 0) return;
@@ -1311,9 +1325,9 @@ function tick() {
   updatePlayerBullets();
   updateEnemyBullets();
   updatePlayerDrones();
-  updateOmegaDrones(); // added
+  updateOmegaDrones();  // ensure defined (fixed)
   updateTraps();
-  updateOmegaTraps();  // added
+  updateOmegaTraps();   // ensure defined (fixed)
   resolveEntityCollisions();
 
   for (const [id] of world.players) {
@@ -1370,6 +1384,56 @@ function droneRespawnTick() {
           if (Math.hypot(d.x - newDrone.x, d.y - newDrone.y) < d.r + newDrone.r) { collides = true; break; }
         }
         if (!collides) p.drones.push(newDrone);
+      }
+    }
+  }
+}
+
+/* ===== Resolve entity collisions ===== */
+function resolveEntityCollisions() {
+  const entities = [];
+
+  for (const p of world.players.values()) {
+    if (p.dead) continue;
+    entities.push({ ref: p, type: "player", ownerId: p.id, x: p.x, y: p.y, r: p.r, mass: 1.0, movable: true });
+
+    for (const d of p.drones) entities.push({ ref: d, type: "playerDrone", ownerId: p.id, x: d.x, y: d.y, r: d.r, mass: 0.3, movable: true });
+    for (const t of p.traps) entities.push({ ref: t, type: "playerTrap", ownerId: p.id, x: t.x, y: t.y, r: t.r, mass: 0.6, movable: true });
+  }
+  if (world.boss.hp > 0) entities.push({ ref: world.boss, type: "boss", ownerId: null, x: world.boss.x, y: world.boss.y, r: world.boss.r, mass: 3.0, movable: true });
+  if (world.superBoss.hp > 0) entities.push({ ref: world.superBoss, type: "superBoss", ownerId: null, x: world.superBoss.x, y: world.superBoss.y, r: world.superBoss.rBottom, mass: 5.0, movable: true });
+  if (world.omegaBoss.alive && world.omegaBoss.hp > 0) entities.push({ ref: world.omegaBoss, type: "omegaBoss", ownerId: null, x: world.omegaBoss.x, y: world.omegaBoss.y, r: world.omegaBoss.rBottom, mass: 8.0, movable: true });
+  for (const s of world.shapes) entities.push({ ref: s, type: "shape", ownerId: null, x: s.x, y: s.y, r: s.r, mass: 0.8, movable: true });
+
+  for (let i = 0; i < entities.length; i++) {
+    for (let j = i + 1; j < entities.length; j++) {
+      const A = entities[i], B = entities[j];
+      const dx = B.ref.x - A.ref.x;
+      const dy = B.ref.y - A.ref.y;
+      const dist = Math.hypot(dx, dy);
+      const minDist = A.r + B.r;
+
+      if (dist > 0 && dist < minDist) {
+        const overlap = minDist - dist;
+        const ux = dx / dist, uy = dy / dist;
+
+        let moveA = (B.mass / (A.mass + B.mass)) * overlap;
+        let moveB = (A.mass / (A.mass + B.mass)) * overlap;
+
+        if (A.type === "player" && (B.type === "playerDrone" || B.type === "playerTrap") && A.ownerId === B.ownerId) {
+          moveA = 0; moveB = overlap;
+        } else if (B.type === "player" && (A.type === "playerDrone" || A.type === "playerTrap") && B.ownerId === A.ownerId) {
+          moveB = 0; moveA = overlap;
+        }
+
+        if (A.movable) {
+          A.ref.x -= ux * moveA; A.ref.y -= uy * moveA;
+          A.ref.x = clamp(A.ref.x, A.r, mapWidth - A.r); A.ref.y = clamp(A.ref.y, A.r, mapHeight - A.r);
+        }
+        if (B.movable) {
+          B.ref.x += ux * moveB; B.ref.y += uy * moveB;
+          B.ref.x = clamp(B.ref.x, B.r, mapWidth - B.r); B.ref.y = clamp(B.ref.y, B.r, mapHeight - B.r);
+        }
       }
     }
   }
@@ -1522,5 +1586,5 @@ io.on("connection", socket => {
 
 /* ===== Serve static ===== */
 app.get("/", (req, res) => res.send("Server running"));
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
