@@ -39,7 +39,7 @@ const world = {
     id: "omegaBoss",
     x: 0, y: 0,
     rBottom: 0, rLayer2: 0, rLayer3: 0, rLayer4: 0,
-    hp: 0, maxHp: 30000,
+    hp: 0, maxHp: 90000,
     angleBottom: 0, angleL2: 0, angleL3: 0, angleL4: 0,
     rotBottom: +0.010,   // CW
     rotL2:     -0.012,   // CCW
@@ -510,7 +510,7 @@ function spawnOmegaBoss() {
   world.omegaBoss.currentSpeedFactor = world.omegaBoss.baseSpeedFactor; // 0.8x player speed
   world.omegaBoss.speed = 3 * world.omegaBoss.currentSpeedFactor;
 
-  io.emit("omegaSpawn", { text: "DEATH IS NEAR!" });
+  io.emit("omegaSpawn", { text: "Ω is the END OF YOUR RAIN!" });
 }
 
 function updateOmegaScaling() {
@@ -1588,3 +1588,4 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
