@@ -11,8 +11,8 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 /* ===== World constants ===== */
-const mapWidth = 12000;
-const mapHeight = 6000;
+const mapWidth = 7200;
+const mapHeight = 4400;
 let nextEntityId = 1;
 const PERF = (typeof performance !== "undefined" && performance.now) ? performance : { now: () => Date.now() };
 
@@ -1339,7 +1339,7 @@ function tick() {
 }
 
 /* ===== Spawners & tick timers ===== */
-setInterval(() => { if (world.shapes.length < 220) spawnShape(); }, 250);
+setInterval(() => { if (world.shapes.length < 200) spawnShape(); }, 250);
 setInterval(bossFire, 1000);
 setInterval(superBossFireBottom, 2500);
 setInterval(superBossFireMiddle, 1000);
@@ -1565,7 +1565,7 @@ io.on("connection", socket => {
     world.players.set(socket.id, fresh);
   });
 
-  // Level to 99 (only if level >= 13) and sync XP
+  // Level to 99 (only if level >= 9) and sync XP
   socket.on("levelTo99", () => {
     const p = world.players.get(socket.id);
     if (!p) return;
@@ -1588,6 +1588,7 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
 
 
 
