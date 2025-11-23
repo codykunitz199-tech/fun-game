@@ -11,8 +11,8 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 /* ===== World constants ===== */
-const mapWidth = 7200;
-const mapHeight = 4400;
+const mapWidth = 14400;
+const mapHeight = 10800;
 let nextEntityId = 1;
 const PERF = (typeof performance !== "undefined" && performance.now) ? performance : { now: () => Date.now() };
 
@@ -550,6 +550,7 @@ function omegaBossAI() {
     }
   }
 
+  // Rotate layers (visible rings)
   b.angleBottom += b.rotBottom;
   b.angleL2     += b.rotL2;
   b.angleL3     += b.rotL3;
@@ -725,6 +726,28 @@ function updatePlayerBullets() {
               world.omegaBoss.drones.length = 0;
             }
             continue;
+          }
+        }
+
+        // NEW: Omega drones hittable (200 HP) — player bullets can damage/destroy drones
+        if (world.omegaBoss.drones.length) {
+          const ob = world.omegaBoss;
+          for (let di = ob.drones.length - 1; di >= 0; di--) {
+            const d = ob.drones[di];
+            const distD = Math.hypot(d.x - b.x, d.y - b.y);
+            if (distD < d.r + b.r) {
+              d.hp = Math.max(0, d.hp - b.dmg);
+              addDamagePopup(d.x, d.y - d.r - 12, b.dmg, "#ff8800");
+
+              if (d.hp <= 0) {
+                ob.drones.splice(di, 1);
+                addDamagePopup(d.x, d.y - d.r - 12, "POP", "#ffaa66");
+              }
+
+              // consume or pierce
+              if (b.pierce > 0) b.pierce--; else player.bullets.splice(i, 1);
+              continue;
+            }
           }
         }
       }
@@ -1224,7 +1247,7 @@ setInterval(() => {
     const x = b.x + Math.cos(ang) * b.rLayer3;
     const y = b.y + Math.sin(ang) * b.rLayer3;
     b.drones.push({
-      x, y, r: 22, speed: 2.2, hp: 300, maxHp: 300,
+      x, y, r: 22, speed: 2.2, hp: 200, maxHp: 200, // CHANGED to 200 HP
       ownerId: "omegaBoss",
       cannonFacing: 0, cannonWide: true,
       nextShootTime: PERF.now() + 3000, droneDmgBase: 50,
@@ -1339,7 +1362,7 @@ function tick() {
 }
 
 /* ===== Spawners & tick timers ===== */
-setInterval(() => { if (world.shapes.length < 200) spawnShape(); }, 250);
+setInterval(() => { if (world.shapes.length < 290) spawnShape(); }, 125);
 setInterval(bossFire, 1000);
 setInterval(superBossFireBottom, 2500);
 setInterval(superBossFireMiddle, 1000);
@@ -1565,7 +1588,7 @@ io.on("connection", socket => {
     world.players.set(socket.id, fresh);
   });
 
-  // Level to 99 (only if level >= 9) and sync XP
+  // Level to 99 (only if level >= 13) and sync XP
   socket.on("levelTo99", () => {
     const p = world.players.get(socket.id);
     if (!p) return;
@@ -1588,7 +1611,3 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
-
-
-
-
