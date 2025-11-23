@@ -11,8 +11,8 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 /* ===== World constants ===== */
-const mapWidth = 14400;
-const mapHeight = 10800;
+const mapWidth = 12000;
+const mapHeight = 6000;
 let nextEntityId = 1;
 const PERF = (typeof performance !== "undefined" && performance.now) ? performance : { now: () => Date.now() };
 
@@ -1339,7 +1339,7 @@ function tick() {
 }
 
 /* ===== Spawners & tick timers ===== */
-setInterval(() => { if (world.shapes.length < 290) spawnShape(); }, 125);
+setInterval(() => { if (world.shapes.length < 220) spawnShape(); }, 250);
 setInterval(bossFire, 1000);
 setInterval(superBossFireBottom, 2500);
 setInterval(superBossFireMiddle, 1000);
@@ -1588,5 +1588,6 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
 
 
