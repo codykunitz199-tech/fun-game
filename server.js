@@ -11,8 +11,8 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 /* ===== World constants ===== */
-const mapWidth = 7200;
-const mapHeight = 5400;
+const mapWidth = 14400;
+const mapHeight = 10800;
 let nextEntityId = 1;
 const PERF = (typeof performance !== "undefined" && performance.now) ? performance : { now: () => Date.now() };
 
@@ -29,7 +29,7 @@ const world = {
     id: "superBoss",
     x: 1200, y: 900,
     rBottom: 150, rMiddle: 112.5, rTop: 90,
-    hp: 10000, maxHp: 10000,
+    hp: 15000, maxHp: 15000,
     angleBottom: 0, angleMiddle: 0, angleTop: 0,
     rotBottom: 0.005, rotMiddle: -0.007, rotTop: 0.005,
     speed: 0.8,
@@ -39,7 +39,7 @@ const world = {
     id: "omegaBoss",
     x: 0, y: 0,
     rBottom: 0, rLayer2: 0, rLayer3: 0, rLayer4: 0,
-    hp: 0, maxHp: 90000,
+    hp: 0, maxHp: 100000,
     angleBottom: 0, angleL2: 0, angleL3: 0, angleL4: 0,
     rotBottom: +0.010,   // CW
     rotL2:     -0.012,   // CCW
@@ -1339,7 +1339,7 @@ function tick() {
 }
 
 /* ===== Spawners & tick timers ===== */
-setInterval(() => { if (world.shapes.length < 180) spawnShape(); }, 250);
+setInterval(() => { if (world.shapes.length < 290) spawnShape(); }, 125);
 setInterval(bossFire, 1000);
 setInterval(superBossFireBottom, 2500);
 setInterval(superBossFireMiddle, 1000);
@@ -1588,4 +1588,5 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
 
