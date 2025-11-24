@@ -51,7 +51,21 @@ const world = {
     bullets: [],
     drones: [],
     traps: [],
-    alive: false
+    alive: false,
+
+    // Visual-only gun configuration and computed nodes
+    gunConfig: {
+      bottom: 60,  // match volley count
+      layer2: 6,   // match trap count
+      layer3: 3,   // match drone spawners
+      layer4: 1
+    },
+    guns: {
+      bottom: [],
+      layer2: [],
+      layer3: [],
+      layer4: []
+    }
   },
   damagePopups: []
 };
@@ -494,7 +508,7 @@ function spawnOmegaBoss() {
   world.omegaBoss.x = randInRange(margin, mapWidth - margin);
   world.omegaBoss.y = randInRange(margin, mapHeight - margin);
 
-  // Dread radius used in your game when evolved: p.r = 80 (20*4), full width = 160
+  // Dread radius in your game when evolved: p.r = 80 (20*4), full width = 160
   const dreadRadius = 80;
   const dreadFullWidth = dreadRadius * 2; // 160
 
@@ -561,6 +575,55 @@ function omegaBossAI() {
   const maxR = b.rBottom;
   b.x = clamp(b.x, maxR, mapWidth - maxR);
   b.y = clamp(b.y, maxR, mapHeight - maxR);
+
+  // Compute visual gun nodes for all rings
+  {
+    const count = b.gunConfig?.bottom ?? 60;
+    b.guns.bottom = [];
+    for (let i = 0; i < count; i++) {
+      const ang = b.angleBottom + i * (Math.PI * 2 / count);
+      b.guns.bottom.push({
+        x: b.x + Math.cos(ang) * b.rBottom,
+        y: b.y + Math.sin(ang) * b.rBottom,
+        angle: ang
+      });
+    }
+  }
+  {
+    const count = b.gunConfig?.layer2 ?? 6;
+    b.guns.layer2 = [];
+    for (let i = 0; i < count; i++) {
+      const ang = b.angleL2 + i * (Math.PI * 2 / count);
+      b.guns.layer2.push({
+        x: b.x + Math.cos(ang) * b.rLayer2,
+        y: b.y + Math.sin(ang) * b.rLayer2,
+        angle: ang
+      });
+    }
+  }
+  {
+    const count = b.gunConfig?.layer3 ?? 3;
+    b.guns.layer3 = [];
+    for (let i = 0; i < count; i++) {
+      const ang = b.angleL3 + i * (Math.PI * 2 / count);
+      b.guns.layer3.push({
+        x: b.x + Math.cos(ang) * b.rLayer3,
+        y: b.y + Math.sin(ang) * b.rLayer3,
+        angle: ang
+      });
+    }
+  }
+  {
+    const ang = b.angleL4;
+    let best = null;
+    for (const p of world.players.values()) { if (!p.dead && (!best || p.xp > best.xp)) best = p; }
+    const faceAngle = (best ? Math.atan2(best.y - b.y, best.x - b.x) : ang);
+    b.guns.layer4 = [{
+      x: b.x + Math.cos(ang) * b.rLayer4,
+      y: b.y + Math.sin(ang) * b.rLayer4,
+      angle: faceAngle
+    }];
+  }
 }
 
 /* ===== Shapes update ===== */
@@ -724,12 +787,16 @@ function updatePlayerBullets() {
               world.omegaBoss.bullets.length = 0;
               world.omegaBoss.traps.length = 0;
               world.omegaBoss.drones.length = 0;
+              world.omegaBoss.guns.bottom = [];
+              world.omegaBoss.guns.layer2 = [];
+              world.omegaBoss.guns.layer3 = [];
+              world.omegaBoss.guns.layer4 = [];
             }
             continue;
           }
         }
 
-        // NEW: Omega drones hittable (200 HP) — player bullets can damage/destroy drones
+        // Omega drones hittable (200 HP)
         if (world.omegaBoss.drones.length) {
           const ob = world.omegaBoss;
           for (let di = ob.drones.length - 1; di >= 0; di--) {
@@ -738,13 +805,10 @@ function updatePlayerBullets() {
             if (distD < d.r + b.r) {
               d.hp = Math.max(0, d.hp - b.dmg);
               addDamagePopup(d.x, d.y - d.r - 12, b.dmg, "#ff8800");
-
               if (d.hp <= 0) {
                 ob.drones.splice(di, 1);
                 addDamagePopup(d.x, d.y - d.r - 12, "POP", "#ffaa66");
               }
-
-              // consume or pierce
               if (b.pierce > 0) b.pierce--; else player.bullets.splice(i, 1);
               continue;
             }
@@ -1247,7 +1311,7 @@ setInterval(() => {
     const x = b.x + Math.cos(ang) * b.rLayer3;
     const y = b.y + Math.sin(ang) * b.rLayer3;
     b.drones.push({
-      x, y, r: 22, speed: 2.2, hp: 200, maxHp: 200, // CHANGED to 200 HP
+      x, y, r: 22, speed: 2.2, hp: 200, maxHp: 200, // 200 HP drones
       ownerId: "omegaBoss",
       cannonFacing: 0, cannonWide: true,
       nextShootTime: PERF.now() + 3000, droneDmgBase: 50,
@@ -1315,7 +1379,8 @@ function buildSnapshotForClient(forPlayerId) {
       angleL4: world.omegaBoss.angleL4,
       bullets: world.omegaBoss.bullets,
       drones: world.omegaBoss.drones,
-      traps: world.omegaBoss.traps
+      traps: world.omegaBoss.traps,
+      guns: world.omegaBoss.guns // visual gun nodes per ring
     } : null),
     shapes: world.shapes,
     damagePopups: world.damagePopups.splice(0),
@@ -1348,9 +1413,9 @@ function tick() {
   updatePlayerBullets();
   updateEnemyBullets();
   updatePlayerDrones();
-  updateOmegaDrones();  // ensure defined (fixed)
+  updateOmegaDrones();
   updateTraps();
-  updateOmegaTraps();   // ensure defined (fixed)
+  updateOmegaTraps();
   resolveEntityCollisions();
 
   for (const [id] of world.players) {
