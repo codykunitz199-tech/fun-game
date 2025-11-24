@@ -11,8 +11,8 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
 /* ===== World constants ===== */
-const mapWidth = 14400;
-const mapHeight = 10800;
+const mapWidth = 7200;
+const mapHeight = 5400;
 let nextEntityId = 1;
 const PERF = (typeof performance !== "undefined" && performance.now) ? performance : { now: () => Date.now() };
 
@@ -1676,3 +1676,4 @@ io.on("connection", socket => {
 app.get("/", (req, res) => res.send("Server running"));
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log("Server listening on", PORT));
+
